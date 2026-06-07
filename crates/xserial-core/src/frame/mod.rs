@@ -13,7 +13,7 @@ pub use crate::protocol::Endian;
 /// arrived.
 ///
 /// [`feed`]: Framer::feed
-pub trait Framer {
+pub trait Framer: Send {
     /// Feed a chunk of newly arrived bytes.
     ///
     /// Any complete frames that can be extracted are returned.  The

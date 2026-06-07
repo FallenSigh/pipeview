@@ -2,10 +2,13 @@ pub mod text;
 pub mod hex;
 pub mod plot;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Endian {
-    Little,
+    #[default]
     Big,
+    Little,
 }
 
 /// Decoded result from a protocol decoder.

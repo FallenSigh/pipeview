@@ -1,8 +1,9 @@
 use super::{DecodedData, ProtocolDecoder};
 use crate::protocol::Endian;
+use serde::{Deserialize, Serialize};
 
 /// Numeric type of samples in a plot frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SampleType {
     I8,
     U8,
@@ -43,13 +44,11 @@ impl SampleType {
 }
 
 /// Channel layout for multi-channel plot data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PlotFormat {
-    /// Interleaved: ch0_s0, ch1_s0, ch0_s1, ch1_s1, ...
+    #[default]
     Interleaved,
-    /// Block: ch0_s0, ch0_s1, ..., ch1_s0, ch1_s1, ...
     Block,
-    /// XY pairs: x0, y0, x1, y1, ... (equivalent to 2 interleaved channels).
     XY,
 }
 

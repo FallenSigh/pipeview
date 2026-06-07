@@ -5,5 +5,13 @@ edition = "2024"
 
 [dependencies]
 xserial-core = { path = "../xserial-core" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+mlua = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tracing-subscriber = { workspace = true }

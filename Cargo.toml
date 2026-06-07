@@ -50,5 +50,5 @@ egui = "0.34"
 eframe = "0.34"
 egui_plot = "0.35"
 
-# ── Lua (Step 6 启用) ──
-# mlua = { version = "0.11", features = ["luajit", "async", "serde", "send", "macros", "vendored"] }
+# ── Lua ──
+mlua = { version = "0.11", features = ["luajit", "async", "serde", "send", "macros", "vendored"] }

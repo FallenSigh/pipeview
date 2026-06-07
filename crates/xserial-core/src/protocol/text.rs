@@ -1,14 +1,13 @@
 use super::{DecodedData, ProtocolDecoder};
 
 /// Supported text encodings for the text protocol decoder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TextEncoding {
-    /// Standard UTF-8.  Returns `None` from `decode()` on invalid byte sequences.
+    #[default]
     Utf8,
-    /// ISO-8859-1 / Latin-1.  Every byte maps 1:1 to a Unicode code point.
-    /// This encoding never fails.
     Latin1,
-    /// 7-bit ASCII.  Returns `None` from `decode()` if any byte has the high bit set.
     Ascii,
 }
 
