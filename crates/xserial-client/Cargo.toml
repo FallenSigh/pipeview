@@ -1,0 +1,9 @@
+[package]
+name = "xserial-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+xserial-core = { path = "../xserial-core" }
+tokio = { workspace = true }
+tracing = { workspace = true }

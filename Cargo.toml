@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/xserial-core",
+    "crates/xserial-client",
+    "crates/xserial-tui",
+    "crates/xserial-gui",
+]
+
+[workspace.dependencies]
+# ── 异步运行时 ──
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# ── 串口 ──
+serialport = "4.9"
+tokio-serial = "5.4"
+
+# ── 协议解析 ──
+bytes = "1"
+nom = "8"
+
+# ── 序列化 ──
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ── 错误处理 ──
+thiserror = "2"
+
+# ── 日志 ──
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# ── 工具 ──
+hex = "0.4"
+
+# ── 图像 ──
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# ── CLI ──
+clap = { version = "4", features = ["derive"] }
+
+# ── TUI ──
+ratatui = "0.30"
+crossterm = "0.28"
+
+# ── GUI ──
+egui = "0.34"
+eframe = "0.34"
+egui_plot = "0.35"
+
+# ── Lua (Step 6 启用) ──
+# mlua = { version = "0.11", features = ["luajit", "async", "serde", "send", "macros", "vendored"] }
