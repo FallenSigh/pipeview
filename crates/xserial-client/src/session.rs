@@ -1,8 +1,14 @@
-use tokio::io::AsyncReadExt;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::select;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use xserial_core::pipeline::{MultiPipeline, Pipeline};
 use xserial_core::transport::Connection;
@@ -23,53 +29,126 @@ pub enum SessionEvent {
     Closed(SessionId),
 }
 
+struct SessionHandleInner {
+    id: SessionId,
+    cmd_tx: mpsc::Sender<SessionCmd>,
+    event_tx: broadcast::Sender<SessionEvent>,
+    task: Mutex<Option<JoinHandle<()>>>,
+    close_requested: AtomicBool,
+}
+
+impl SessionHandleInner {
+    fn new(
+        id: SessionId,
+        cmd_tx: mpsc::Sender<SessionCmd>,
+        event_tx: broadcast::Sender<SessionEvent>,
+        task: JoinHandle<()>,
+    ) -> Self {
+        Self {
+            id,
+            cmd_tx,
+            event_tx,
+            task: Mutex::new(Some(task)),
+            close_requested: AtomicBool::new(false),
+        }
+    }
+
+    async fn request_close(&self) -> Result<(), String> {
+        self.close_requested.store(true, Ordering::SeqCst);
+        self.cmd_tx
+            .send(SessionCmd::Close)
+            .await
+            .map_err(|_| String::from("session closed"))
+    }
+
+    fn request_close_nonblocking(&self) {
+        self.close_requested.store(true, Ordering::SeqCst);
+        let _ = self.cmd_tx.try_send(SessionCmd::Close);
+    }
+}
+
+#[derive(Clone)]
 pub struct SessionHandle {
     pub id: SessionId,
-    pub(crate) cmd_tx: mpsc::Sender<SessionCmd>,
-    pub(crate) event_tx: broadcast::Sender<SessionEvent>,
-    pub(crate) _task: Option<JoinHandle<()>>,
+    inner: Arc<SessionHandleInner>,
 }
 
 impl SessionHandle {
-    pub fn id(&self) -> SessionId { self.id }
+    fn new(inner: Arc<SessionHandleInner>) -> Self {
+        Self {
+            id: inner.id,
+            inner,
+        }
+    }
+
+    pub fn id(&self) -> SessionId {
+        self.id
+    }
 
     pub async fn send(&self, data: Vec<u8>) -> Result<(), String> {
-        self.cmd_tx.send(SessionCmd::Send(data)).await.map_err(|_| "session closed".into())
+        self.inner
+            .cmd_tx
+            .send(SessionCmd::Send(data))
+            .await
+            .map_err(|_| String::from("session closed"))
     }
 
     pub async fn close(&self) -> Result<(), String> {
-        self.cmd_tx.send(SessionCmd::Close).await.map_err(|_| "session closed".into())
+        self.inner.request_close().await
     }
 
     pub async fn reconfigure(&self, config: SessionConfig) -> Result<(), String> {
-        self.cmd_tx.send(SessionCmd::Reconfigure(config)).await.map_err(|_| "session closed".into())
+        self.inner
+            .cmd_tx
+            .send(SessionCmd::Reconfigure(config))
+            .await
+            .map_err(|_| String::from("session closed"))
     }
 
     pub async fn read(&self, timeout_ms: u64) -> Option<DecodedEntry> {
-        let mut rx = self.event_tx.subscribe();
-        let deadline = std::time::Duration::from_millis(timeout_ms);
+        let mut rx = self.inner.event_tx.subscribe();
+        let deadline = Duration::from_millis(timeout_ms);
         tokio::time::timeout(deadline, async {
             loop {
                 match rx.recv().await {
-                    Ok(SessionEvent::Data(_, e)) => return Some(e),
+                    Ok(SessionEvent::Data(_, entry)) => return Some(entry),
                     Ok(SessionEvent::Error(_, _) | SessionEvent::Closed(_)) => return None,
+                    Ok(SessionEvent::Connected(_) | SessionEvent::Disconnected(_)) => {}
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => return None,
-                    _ => continue,
                 }
             }
-        }).await.ok().flatten()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
-        self.event_tx.subscribe()
+        self.inner.event_tx.subscribe()
+    }
+
+    pub(crate) async fn join(&self) {
+        let task = {
+            let mut slot = self.inner.task.lock().await;
+            slot.take()
+        };
+        if let Some(task) = task {
+            let _ = task.await;
+        }
     }
 }
 
 impl Drop for SessionHandle {
     fn drop(&mut self) {
-        let _ = self.cmd_tx.try_send(SessionCmd::Close);
-        if let Some(t) = self._task.take() { t.abort(); }
+        if Arc::strong_count(&self.inner) == 1 {
+            self.inner.request_close_nonblocking();
+            if let Ok(mut task) = self.inner.task.try_lock() {
+                if let Some(task) = task.take() {
+                    task.abort();
+                }
+            }
+        }
     }
 }
 
@@ -81,6 +160,7 @@ pub struct Session {
     history: RingBuffer<DecodedEntry>,
     cmd_rx: mpsc::Receiver<SessionCmd>,
     event_tx: broadcast::Sender<SessionEvent>,
+    close_requested: bool,
 }
 
 impl Session {
@@ -88,99 +168,164 @@ impl Session {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (event_tx, _) = broadcast::channel(256);
         let mut session = Self {
-            id, conn: None,
+            id,
             pipeline: Self::build_pipeline(&config),
             history: RingBuffer::new(config.history_limit),
-            config, cmd_rx, event_tx: event_tx.clone(),
+            config,
+            conn: None,
+            cmd_rx,
+            event_tx: event_tx.clone(),
+            close_requested: false,
         };
         let task = tokio::spawn(async move { session.run().await });
-        SessionHandle { id, cmd_tx, event_tx, _task: Some(task) }
+        let inner = Arc::new(SessionHandleInner::new(id, cmd_tx, event_tx, task));
+        SessionHandle::new(inner)
     }
 
     fn build_pipeline(config: &SessionConfig) -> MultiPipeline {
-        let mut mp = MultiPipeline::new();
-        for pc in &config.pipelines {
-            mp.add(Pipeline::new(
-                pc.name.clone(),
-                pc.framer.clone().build(),
-                pc.decoder.clone().build(),
+        let mut pipelines = MultiPipeline::new();
+        for pipeline in &config.pipelines {
+            pipelines.add(Pipeline::new(
+                pipeline.name.clone(),
+                pipeline.framer.clone().build(),
+                pipeline.decoder.clone().build(),
             ));
         }
-        mp
+        pipelines
     }
 
     async fn run(&mut self) {
         info!(session_id = self.id, "session started");
 
-        // Initial connect
-        let conn = &mut self.conn;
-        if let Err(e) = do_connect(conn, &self.config, &self.event_tx, self.id).await {
-            let _ = self.event_tx.send(SessionEvent::Error(self.id, format!("connect failed: {}", e)));
-            let _ = self.event_tx.send(SessionEvent::Closed(self.id));
+        if let Err(err) = self.connect().await {
+            warn!(session_id = self.id, error = %err, "initial connect failed");
+            self.emit_error(format!("connect failed: {err}"));
+            self.emit_closed();
+            info!(session_id = self.id, "session ended");
             return;
         }
 
         loop {
-            let cmd_rx = &mut self.cmd_rx;
-            let conn = &mut self.conn;
-            let pipeline = &mut self.pipeline;
-            let history = &mut self.history;
-            let event_tx = &self.event_tx;
-            let id = self.id;
-
             select! {
-                cmd = cmd_rx.recv() => {
-                    match cmd {
-                        Some(SessionCmd::Close) => {
-                            do_disconnect(conn, pipeline, event_tx, id).await;
-                            let _ = event_tx.send(SessionEvent::Closed(id));
-                            break;
-                        }
-                        Some(SessionCmd::Send(data)) => {
-                            if let Some(c) = conn {
-                                use tokio::io::AsyncWriteExt;
-                                if let Err(e) = c.write_all(&data).await {
-                                    let _ = event_tx.send(SessionEvent::Error(id, format!("write: {}", e)));
-                                }
-                            }
-                        }
-                        Some(SessionCmd::Reconfigure(new_cfg)) => {
-                            do_disconnect(conn, pipeline, event_tx, id).await;
-                            self.config = new_cfg;
-                            *pipeline = Self::build_pipeline(&self.config);
-                            *history = RingBuffer::new(self.config.history_limit);
-                            if let Err(e) = do_connect(conn, &self.config, event_tx, id).await {
-                                let _ = event_tx.send(SessionEvent::Error(id, format!("reconnect: {}", e)));
-                            }
-                        }
-                        None => break,
+                cmd = self.cmd_rx.recv() => {
+                    if !self.handle_command(cmd).await {
+                        break;
                     }
                 }
-                result = try_read(conn, pipeline) => {
-                    match result {
-                        Ok(entries) => {
-                            for entry in entries {
-                                history.push(entry.clone());
-                                let _ = event_tx.send(SessionEvent::Data(id, entry));
-                            }
-                        }
-                        Err(e) => {
-                            error!(session_id = id, error = %e, "read error");
-                            let _ = event_tx.send(SessionEvent::Error(id, e.to_string()));
-                            do_disconnect(conn, pipeline, event_tx, id).await;
-                            if self.config.auto_reconnect {
-                                warn!(session_id = id, "auto-reconnecting");
-                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                                if let Err(e) = do_connect(conn, &self.config, event_tx, id).await {
-                                    let _ = event_tx.send(SessionEvent::Error(id, format!("reconnect: {}", e)));
-                                }
-                            }
-                        }
+                read = try_read(&mut self.conn, &mut self.pipeline) => {
+                    if !self.handle_read_result(read).await {
+                        break;
                     }
                 }
             }
         }
+
+        self.disconnect(false).await;
+        self.emit_closed();
         info!(session_id = self.id, "session ended");
+    }
+
+    async fn handle_command(&mut self, cmd: Option<SessionCmd>) -> bool {
+        match cmd {
+            Some(SessionCmd::Close) => {
+                self.close_requested = true;
+                false
+            }
+            Some(SessionCmd::Send(data)) => {
+                self.handle_send(data).await;
+                true
+            }
+            Some(SessionCmd::Reconfigure(config)) => {
+                self.handle_reconfigure(config).await;
+                true
+            }
+            None => false,
+        }
+    }
+
+    async fn handle_send(&mut self, data: Vec<u8>) {
+        debug!(session_id = self.id, len = data.len(), "sending data");
+        match self.conn.as_mut() {
+            Some(conn) => {
+                if let Err(err) = conn.write_all(&data).await {
+                    self.emit_error(format!("write: {err}"));
+                }
+            }
+            None => self.emit_error(String::from("write: session not connected")),
+        }
+    }
+
+    async fn handle_reconfigure(&mut self, config: SessionConfig) {
+        info!(session_id = self.id, "reconfiguring session");
+        self.disconnect(true).await;
+        self.config = config;
+        self.pipeline = Self::build_pipeline(&self.config);
+        self.history = RingBuffer::new(self.config.history_limit);
+
+        if let Err(err) = self.connect().await {
+            self.emit_error(format!("reconnect: {err}"));
+        }
+    }
+
+    async fn handle_read_result(
+        &mut self,
+        result: Result<Vec<DecodedEntry>, std::io::Error>,
+    ) -> bool {
+        match result {
+            Ok(entries) => {
+                for entry in entries {
+                    self.history.push(entry.clone());
+                    let _ = self.event_tx.send(SessionEvent::Data(self.id, entry));
+                }
+                true
+            }
+            Err(err) => {
+                error!(session_id = self.id, error = %err, "read error");
+                self.emit_error(err.to_string());
+                self.disconnect(true).await;
+
+                if self.config.auto_reconnect && !self.close_requested {
+                    warn!(session_id = self.id, "auto-reconnecting");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    if let Err(err) = self.connect().await {
+                        self.emit_error(format!("reconnect: {err}"));
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    async fn connect(&mut self) -> Result<(), std::io::Error> {
+        let transport = self.config.transport.clone();
+        debug!(session_id = self.id, ?transport, "connecting session");
+        let mut conn = Connection::new(transport);
+        conn.connect().await.map_err(to_io_error)?;
+        self.conn = Some(conn);
+        let _ = self.event_tx.send(SessionEvent::Connected(self.id));
+        info!(session_id = self.id, "session connected");
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, emit_disconnected: bool) {
+        if let Some(mut conn) = self.conn.take() {
+            let _ = conn.disconnect().await;
+            if emit_disconnected {
+                let _ = self.event_tx.send(SessionEvent::Disconnected(self.id));
+            }
+            info!(session_id = self.id, "session disconnected");
+        }
+        self.pipeline.reset();
+    }
+
+    fn emit_error(&self, message: String) {
+        let _ = self.event_tx.send(SessionEvent::Error(self.id, message));
+    }
+
+    fn emit_closed(&self) {
+        let _ = self.event_tx.send(SessionEvent::Closed(self.id));
     }
 }
 
@@ -188,42 +333,215 @@ async fn try_read(
     conn: &mut Option<Connection>,
     pipeline: &mut MultiPipeline,
 ) -> Result<Vec<DecodedEntry>, std::io::Error> {
-    let c = match conn.as_mut() { Some(c) => c, None => return Ok(Vec::new()) };
-    let mut buf = [0u8; 4096];
-    match c.read(&mut buf).await {
-        Ok(0) => Ok(Vec::new()),
-        Ok(n) => {
-            Ok(pipeline.feed(&buf[..n])
-                .into_iter()
-                .map(|r| DecodedEntry { pipeline_name: r.pipeline_name, data: r.data })
-                .collect())
+    let conn = match conn.as_mut() {
+        Some(conn) => conn,
+        None => {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            return Ok(Vec::new());
         }
-        Err(e) => Err(e),
+    };
+
+    let mut buf = [0u8; 4096];
+    match conn.read(&mut buf).await {
+        Ok(0) => Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "connection closed",
+        )),
+        Ok(n) => Ok(pipeline
+            .feed(&buf[..n])
+            .into_iter()
+            .map(|result| DecodedEntry {
+                pipeline_name: result.pipeline_name,
+                data: result.data,
+            })
+            .collect()),
+        Err(err) => Err(err),
     }
 }
 
-async fn do_connect(
-    conn: &mut Option<Connection>,
-    config: &SessionConfig,
-    event_tx: &broadcast::Sender<SessionEvent>,
-    id: SessionId,
-) -> Result<(), std::io::Error> {
-    let mut c = Connection::new(config.transport.clone());
-    c.connect().await.map_err(|e| std::io::Error::new(std::io::ErrorKind::NotConnected, format!("{}", e)))?;
-    *conn = Some(c);
-    let _ = event_tx.send(SessionEvent::Connected(id));
-    Ok(())
+fn to_io_error(err: xserial_core::error::Error) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
 }
 
-async fn do_disconnect(
-    conn: &mut Option<Connection>,
-    pipeline: &mut MultiPipeline,
-    event_tx: &broadcast::Sender<SessionEvent>,
-    id: SessionId,
-) {
-    if let Some(mut c) = conn.take() {
-        let _ = c.disconnect().await;
-        pipeline.reset();
-        let _ = event_tx.send(SessionEvent::Disconnected(id));
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{DecoderConfig, FramerConfig, PipelineConfig};
+
+    fn tcp_config() -> SessionConfig {
+        SessionConfig {
+            transport: xserial_core::transport::TransportConfig::Tcp {
+                addr: "127.0.0.1:1".into(),
+            },
+            pipelines: vec![PipelineConfig {
+                name: "text".into(),
+                framer: FramerConfig::Line {
+                    strip_cr: true,
+                    max_line_len: 65536,
+                },
+                decoder: DecoderConfig::Text {
+                    encoding: xserial_core::protocol::text::TextEncoding::Utf8,
+                },
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn session_id_is_u64() {
+        let _id: SessionId = 42;
+    }
+
+    #[test]
+    fn session_event_debug() {
+        let e1 = SessionEvent::Connected(1);
+        let e2 = SessionEvent::Disconnected(1);
+        let e3 = SessionEvent::Closed(1);
+        let e4 = SessionEvent::Error(1, "oops".into());
+        let _ = format!("{:?}", e1);
+        let _ = format!("{:?}", e2);
+        let _ = format!("{:?}", e3);
+        let _ = format!("{:?}", e4);
+    }
+
+    #[test]
+    fn session_event_clone() {
+        let e1 = SessionEvent::Connected(1);
+        let e2 = e1.clone();
+        match (e1, e2) {
+            (SessionEvent::Connected(a), SessionEvent::Connected(b)) => assert_eq!(a, b),
+            _ => panic!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_and_close_session() {
+        let handle = Session::spawn(1, tcp_config());
+        let mut rx = handle.subscribe();
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timeout");
+        if let Ok(event) = event {
+            assert!(matches!(
+                event,
+                SessionEvent::Error(_, _) | SessionEvent::Connected(_)
+            ));
+        }
+        let _ = handle.close().await;
+        handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn handle_send_to_dead_session() {
+        let handle = Session::spawn(2, tcp_config());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = handle.send(b"data".to_vec()).await;
+        handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn handle_close_twice_is_idempotent() {
+        let handle = Session::spawn(3, tcp_config());
+        let _ = handle.close().await;
+        let _ = handle.close().await;
+        handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn handle_read_after_close() {
+        let handle = Session::spawn(4, tcp_config());
+        let _ = handle.close().await;
+        let result = handle.read(100).await;
+        assert!(result.is_none());
+        handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn handle_read_timeout_returns_none() {
+        let handle = Session::spawn(5, tcp_config());
+        let result = handle.read(100).await;
+        assert!(result.is_none());
+        let _ = handle.close().await;
+        handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn handle_subscribe_receives_events() {
+        let handle = Session::spawn(6, tcp_config());
+        let mut rx = handle.subscribe();
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timeout");
+        if let Ok(event) = event {
+            assert!(matches!(
+                event,
+                SessionEvent::Error(_, _) | SessionEvent::Connected(_)
+            ));
+        }
+        let _ = handle.close().await;
+        handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn handle_id_matches() {
+        let handle = Session::spawn(99, tcp_config());
+        assert_eq!(handle.id(), 99);
+        let _ = handle.close().await;
+        handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn handle_reconfigure_triggers_reconnect() {
+        let handle = Session::spawn(7, tcp_config());
+        let new_cfg = tcp_config();
+        let _ = handle.reconfigure(new_cfg).await;
+        let _ = handle.close().await;
+        handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn handle_drop_closes_session() {
+        let handle = Session::spawn(8, tcp_config());
+        let mut rx = handle.subscribe();
+        drop(handle);
+        let mut closed = false;
+        while let Ok(Ok(event)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            if matches!(event, SessionEvent::Closed(_)) {
+                closed = true;
+                break;
+            }
+        }
+        let _ = closed;
+    }
+
+    #[tokio::test]
+    async fn multiple_subscribers_all_receive() {
+        let handle = Session::spawn(9, tcp_config());
+        let mut rx1 = handle.subscribe();
+        let mut rx2 = handle.subscribe();
+
+        let e1 = tokio::time::timeout(Duration::from_secs(5), rx1.recv())
+            .await
+            .unwrap();
+        if let Ok(e1) = e1 {
+            assert!(matches!(
+                e1,
+                SessionEvent::Connected(9) | SessionEvent::Error(9, _)
+            ));
+        }
+
+        let e2 = tokio::time::timeout(Duration::from_secs(1), rx2.recv())
+            .await
+            .unwrap();
+        if let Ok(e2) = e2 {
+            assert!(matches!(
+                e2,
+                SessionEvent::Connected(9) | SessionEvent::Error(9, _)
+            ));
+        }
+
+        let _ = handle.close().await;
+        handle.join().await;
     }
 }

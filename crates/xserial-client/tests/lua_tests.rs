@@ -1,4 +1,5 @@
 use std::sync::Once;
+use std::time::Duration;
 
 use mlua::Lua;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,6 +16,26 @@ fn init_tracing() {
     });
 }
 
+fn text_pipeline_lua() -> &'static str {
+    r#"
+        {
+        name = "text",
+        framer = { Line = {} },
+        decoder = { Text = {} }
+        }
+    "#
+}
+
+fn hex_pipeline_lua() -> &'static str {
+    r#"
+        {
+        name = "hex",
+        framer = { Line = {} },
+        decoder = { Hex = { uppercase = true } }
+        }
+    "#
+}
+
 // ── xserial.sleep / xserial.log ──────────────────────────────────
 
 #[tokio::test]
@@ -27,7 +48,7 @@ async fn lua_sleep_and_log() {
         xserial.log("test start")
         xserial.sleep(50)
         xserial.log("test end")
-        "#
+        "#,
     )
     .exec_async()
     .await
@@ -66,6 +87,7 @@ async fn lua_session_open_send_read_close() {
         let n = stream.read(&mut buf).await.unwrap();
         assert_eq!(&buf[..n], b"hello\n");
         stream.write_all(b"world\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
     });
 
     let lua = Lua::new();
@@ -75,11 +97,7 @@ async fn lua_session_open_send_read_close() {
         r#"
         local sess = xserial.open({{
             transport = {{ Tcp = {{ addr = "{}" }} }},
-            pipelines = {{{{
-                name = "text",
-                framer = {{ Line = {{}} }},
-                decoder = {{ Text = {{}} }}
-            }}}}
+            pipelines = {{{}}}
         }})
 
         sess:send("hello\n")
@@ -91,7 +109,8 @@ async fn lua_session_open_send_read_close() {
 
         sess:close()
         "#,
-        addr
+        addr,
+        text_pipeline_lua()
     );
 
     lua.load(&script).exec_async().await.unwrap();
@@ -117,11 +136,7 @@ async fn lua_session_read_timeout() {
         r#"
         local sess = xserial.open({{
             transport = {{ Tcp = {{ addr = "{}" }} }},
-            pipelines = {{{{
-                name = "text",
-                framer = {{ Line = {{}} }},
-                decoder = {{ Text = {{}} }}
-            }}}}
+            pipelines = {{{}}}
         }})
 
         local r = sess:read(100)
@@ -129,7 +144,8 @@ async fn lua_session_read_timeout() {
 
         sess:close()
         "#,
-        addr
+        addr,
+        text_pipeline_lua()
     );
 
     lua.load(&script).exec_async().await.unwrap();
@@ -145,6 +161,7 @@ async fn lua_session_hex_decoder() {
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         stream.write_all(b"ABC\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
     });
 
     let lua = Lua::new();
@@ -154,11 +171,7 @@ async fn lua_session_hex_decoder() {
         r#"
         local sess = xserial.open({{
             transport = {{ Tcp = {{ addr = "{}" }} }},
-            pipelines = {{{{
-                name = "hex",
-                framer = {{ Line = {{}} }},
-                decoder = {{ Hex = {{ uppercase = true }} }}
-            }}}}
+            pipelines = {{{}}}
         }})
 
         local r = sess:read(5000)
@@ -169,7 +182,8 @@ async fn lua_session_hex_decoder() {
 
         sess:close()
         "#,
-        addr
+        addr,
+        hex_pipeline_lua()
     );
 
     lua.load(&script).exec_async().await.unwrap();
@@ -186,6 +200,7 @@ async fn lua_session_on_data_callback() {
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         stream.write_all(b"line1\nline2\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
     });
 
     let lua = Lua::new();
@@ -196,19 +211,19 @@ async fn lua_session_on_data_callback() {
         local received = {{}}
         local sess = xserial.open({{
             transport = {{ Tcp = {{ addr = "{}" }} }},
-            pipelines = {{{{
-                name = "text",
-                framer = {{ Line = {{}} }},
-                decoder = {{ Text = {{}} }}
-            }}}}
+            pipelines = {{{}}}
         }})
 
         sess:on_data(function(name, data)
             table.insert(received, {{ name = name, data = data }})
         end)
 
-        -- Wait for both lines
-        xserial.sleep(500)
+        for _ = 1, 50 do
+            if #received < 2 then
+                xserial.poll(1)
+                xserial.sleep(10)
+            end
+        end
 
         assert(#received == 2, "expected 2 callbacks, got " .. #received)
         assert(received[1].name == "text")
@@ -218,7 +233,8 @@ async fn lua_session_on_data_callback() {
 
         sess:close()
         "#,
-        addr
+        addr,
+        text_pipeline_lua()
     );
 
     lua.load(&script).exec_async().await.unwrap();
@@ -235,6 +251,7 @@ async fn lua_session_reconfigure() {
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         stream.write_all(b"test\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
     });
 
     let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -243,6 +260,7 @@ async fn lua_session_reconfigure() {
     let server2 = tokio::spawn(async move {
         let (mut stream, _) = listener2.accept().await.unwrap();
         stream.write_all(b"ABC\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
     });
 
     let lua = Lua::new();
@@ -252,11 +270,7 @@ async fn lua_session_reconfigure() {
         r#"
         local sess = xserial.open({{
             transport = {{ Tcp = {{ addr = "{}" }} }},
-            pipelines = {{{{
-                name = "text",
-                framer = {{ Line = {{}} }},
-                decoder = {{ Text = {{}} }}
-            }}}}
+            pipelines = {{{}}}
         }})
 
         local r = sess:read(5000)
@@ -265,11 +279,7 @@ async fn lua_session_reconfigure() {
         -- Reconfigure to hex on different address
         sess:reconfigure({{
             transport = {{ Tcp = {{ addr = "{}" }} }},
-            pipelines = {{{{
-                name = "hex",
-                framer = {{ Line = {{}} }},
-                decoder = {{ Hex = {{ uppercase = true }} }}
-            }}}}
+            pipelines = {{{}}}
         }})
 
         local r2 = sess:read(5000)
@@ -278,10 +288,114 @@ async fn lua_session_reconfigure() {
 
         sess:close()
         "#,
-        addr, addr2
+        addr,
+        text_pipeline_lua(),
+        addr2,
+        hex_pipeline_lua()
     );
 
     lua.load(&script).exec_async().await.unwrap();
     server.await.unwrap();
     server2.await.unwrap();
+}
+
+// ── session:next_event ───────────────────────────────────────────
+
+#[tokio::test]
+async fn lua_session_next_event_stream() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        stream.write_all(b"streamed\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    });
+
+    let lua = Lua::new();
+    xserial_client::lua::register(&lua).unwrap();
+
+    let script = format!(
+        r#"
+        local sess = xserial.open({{
+            transport = {{ Tcp = {{ addr = "{}" }} }},
+            pipelines = {{{}}}
+        }})
+
+        local e1 = sess:next_event(5000)
+        assert(e1 ~= nil, "expected connected event")
+        assert(e1.type == "connected", "expected connected, got " .. tostring(e1.type))
+
+        local e2 = sess:next_event(5000)
+        assert(e2 ~= nil, "expected data event")
+        assert(e2.type == "data", "expected data, got " .. tostring(e2.type))
+        assert(e2.pipeline == "text")
+        assert(e2.kind == "text")
+        assert(e2.data == "streamed")
+
+        sess:close()
+        "#,
+        addr,
+        text_pipeline_lua()
+    );
+
+    lua.load(&script).exec_async().await.unwrap();
+    server.await.unwrap();
+}
+
+// ── session:off + xserial.poll ───────────────────────────────────
+
+#[tokio::test]
+async fn lua_session_off_stops_future_callbacks() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        stream.write_all(b"first\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        stream.write_all(b"second\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    });
+
+    let lua = Lua::new();
+    xserial_client::lua::register(&lua).unwrap();
+
+    let script = format!(
+        r#"
+        local received = {{}}
+        local sess = xserial.open({{
+            transport = {{ Tcp = {{ addr = "{}" }} }},
+            pipelines = {{{}}}
+        }})
+
+        local token = sess:on_data(function(name, data)
+            table.insert(received, name .. ":" .. data)
+        end)
+
+        for _ = 1, 50 do
+            if #received == 0 then
+                xserial.poll(1)
+                xserial.sleep(10)
+            end
+        end
+
+        assert(#received == 1, "expected first callback before off, got " .. #received)
+        assert(received[1] == "text:first")
+        assert(sess:off(token) == true)
+
+        xserial.sleep(250)
+        xserial.poll(10)
+
+        assert(#received == 1, "callback should not fire after off")
+        assert(sess:off(token) == false)
+
+        sess:close()
+        "#,
+        addr,
+        text_pipeline_lua()
+    );
+
+    lua.load(&script).exec_async().await.unwrap();
+    server.await.unwrap();
 }
