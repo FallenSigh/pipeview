@@ -5788,6 +5788,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_plot",
+ "hex",
  "tokio",
  "tracing",
  "tracing-subscriber",

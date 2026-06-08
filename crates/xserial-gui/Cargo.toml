@@ -16,3 +16,4 @@ eframe = { workspace = true }
 egui_plot = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+hex = "0.4"

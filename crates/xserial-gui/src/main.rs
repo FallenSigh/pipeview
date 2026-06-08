@@ -1,4 +1,5 @@
 mod app;
+mod buffers;
 mod panels;
 
 use xserial_client::SessionManager;
@@ -17,6 +18,6 @@ fn main() {
     let _ = eframe::run_native(
         "xserial",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(app::XserialApp::new(mgr, rx)))),
+        Box::new(|cc| Ok(Box::new(app::XserialApp::new(mgr, rx, cc.egui_ctx.clone())))),
     );
 }

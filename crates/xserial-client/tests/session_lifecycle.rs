@@ -203,7 +203,7 @@ async fn manager_create_and_list() {
         tokio::time::sleep(Duration::from_secs(10)).await;
     });
 
-    let mut mgr = SessionManager::new();
+    let mgr = SessionManager::new();
     assert_eq!(mgr.count(), 0);
     assert!(mgr.list_ids().is_empty());
 
@@ -236,7 +236,7 @@ async fn manager_event_subscription() {
         stream.write_all(b"data\n").await.unwrap();
     });
 
-    let mut mgr = SessionManager::new();
+    let mgr = SessionManager::new();
     let mut rx = mgr.subscribe();
 
     let handle = mgr.create(tcp_config(addr));

@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
+use std::{future, io};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::select;
@@ -105,6 +106,38 @@ impl SessionHandle {
             .map_err(|_| String::from("session closed"))
     }
 
+    pub async fn connect(&self) -> Result<(), String> {
+        self.inner
+            .cmd_tx
+            .send(SessionCmd::Connect)
+            .await
+            .map_err(|_| String::from("session closed"))
+    }
+
+    pub async fn disconnect(&self) -> Result<(), String> {
+        self.inner
+            .cmd_tx
+            .send(SessionCmd::Disconnect)
+            .await
+            .map_err(|_| String::from("session closed"))
+    }
+
+    pub async fn reconnect(&self) -> Result<(), String> {
+        self.inner
+            .cmd_tx
+            .send(SessionCmd::Reconnect)
+            .await
+            .map_err(|_| String::from("session closed"))
+    }
+
+    pub async fn set_auto_reconnect(&self, enabled: bool) -> Result<(), String> {
+        self.inner
+            .cmd_tx
+            .send(SessionCmd::SetAutoReconnect(enabled))
+            .await
+            .map_err(|_| String::from("session closed"))
+    }
+
     pub async fn read(&self, timeout_ms: u64) -> Option<DecodedEntry> {
         let mut rx = self.inner.event_tx.subscribe();
         let deadline = Duration::from_millis(timeout_ms);
@@ -161,6 +194,7 @@ pub struct Session {
     cmd_rx: mpsc::Receiver<SessionCmd>,
     event_tx: broadcast::Sender<SessionEvent>,
     close_requested: bool,
+    desired_connected: bool,
 }
 
 impl Session {
@@ -176,6 +210,7 @@ impl Session {
             cmd_rx,
             event_tx: event_tx.clone(),
             close_requested: false,
+            desired_connected: true,
         };
         let task = tokio::spawn(async move { session.run().await });
         let inner = Arc::new(SessionHandleInner::new(id, cmd_tx, event_tx, task));
@@ -200,12 +235,10 @@ impl Session {
         if let Err(err) = self.connect().await {
             warn!(session_id = self.id, error = %err, "initial connect failed");
             self.emit_error(format!("connect failed: {err}"));
-            self.emit_closed();
-            info!(session_id = self.id, "session ended");
-            return;
         }
 
         loop {
+            let reconnect_timer = self.reconnect_timer();
             select! {
                 cmd = self.cmd_rx.recv() => {
                     if !self.handle_command(cmd).await {
@@ -215,6 +248,11 @@ impl Session {
                 read = try_read(&mut self.conn, &mut self.pipeline) => {
                     if !self.handle_read_result(read).await {
                         break;
+                    }
+                }
+                _ = reconnect_timer => {
+                    if let Err(err) = self.connect().await {
+                        self.emit_error(format!("connect failed: {err}"));
                     }
                 }
             }
@@ -229,7 +267,34 @@ impl Session {
         match cmd {
             Some(SessionCmd::Close) => {
                 self.close_requested = true;
+                self.desired_connected = false;
                 false
+            }
+            Some(SessionCmd::Connect) => {
+                self.desired_connected = true;
+                if self.conn.is_none() {
+                    if let Err(err) = self.connect().await {
+                        self.emit_error(format!("connect failed: {err}"));
+                    }
+                }
+                true
+            }
+            Some(SessionCmd::Disconnect) => {
+                self.desired_connected = false;
+                self.disconnect(true).await;
+                true
+            }
+            Some(SessionCmd::Reconnect) => {
+                self.desired_connected = true;
+                self.disconnect(true).await;
+                if let Err(err) = self.connect().await {
+                    self.emit_error(format!("reconnect: {err}"));
+                }
+                true
+            }
+            Some(SessionCmd::SetAutoReconnect(enabled)) => {
+                self.config.auto_reconnect = enabled;
+                true
             }
             Some(SessionCmd::Send(data)) => {
                 self.handle_send(data).await;
@@ -283,22 +348,29 @@ impl Session {
                 error!(session_id = self.id, error = %err, "read error");
                 self.emit_error(err.to_string());
                 self.disconnect(true).await;
-
-                if self.config.auto_reconnect && !self.close_requested {
-                    warn!(session_id = self.id, "auto-reconnecting");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    if let Err(err) = self.connect().await {
-                        self.emit_error(format!("reconnect: {err}"));
-                    }
-                    true
-                } else {
-                    false
-                }
+                true
             }
         }
     }
 
-    async fn connect(&mut self) -> Result<(), std::io::Error> {
+    fn reconnect_timer(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let should_retry = self.conn.is_none()
+            && self.desired_connected
+            && self.config.auto_reconnect
+            && !self.close_requested;
+        async move {
+            if should_retry {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            } else {
+                future::pending::<()>().await;
+            }
+        }
+    }
+
+    async fn connect(&mut self) -> Result<(), io::Error> {
+        if self.conn.is_some() {
+            return Ok(());
+        }
         let transport = self.config.transport.clone();
         debug!(session_id = self.id, ?transport, "connecting session");
         let mut conn = Connection::new(transport);
@@ -332,19 +404,18 @@ impl Session {
 async fn try_read(
     conn: &mut Option<Connection>,
     pipeline: &mut MultiPipeline,
-) -> Result<Vec<DecodedEntry>, std::io::Error> {
-    let conn = match conn.as_mut() {
-        Some(conn) => conn,
-        None => {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            return Ok(Vec::new());
-        }
-    };
+) -> Result<Vec<DecodedEntry>, io::Error> {
+    if conn.is_none() {
+        future::pending::<()>().await;
+        unreachable!("pending future should never resolve");
+    }
+
+    let conn = conn.as_mut().expect("connection presence checked");
 
     let mut buf = [0u8; 4096];
     match conn.read(&mut buf).await {
-        Ok(0) => Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
+        Ok(0) => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
             "connection closed",
         )),
         Ok(n) => Ok(pipeline
@@ -360,7 +431,7 @@ async fn try_read(
 }
 
 fn to_io_error(err: xserial_core::error::Error) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+    io::Error::new(io::ErrorKind::Other, err.to_string())
 }
 
 #[cfg(test)]
@@ -497,6 +568,20 @@ mod tests {
         let _ = handle.reconfigure(new_cfg).await;
         let _ = handle.close().await;
         handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn try_read_without_connection_stays_pending() {
+        let mut conn = None;
+        let mut pipeline = MultiPipeline::new();
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(50),
+            try_read(&mut conn, &mut pipeline),
+        )
+        .await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]

@@ -14,6 +14,7 @@ pub struct ConfigForm {
     pub udp_remote: String,
     pub pipelines: Vec<(String, FramerChoice, DecoderChoice)>,
     pub history: usize,
+    pub auto_reconnect: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -47,11 +48,63 @@ impl Default for ConfigForm {
             udp_remote: String::new(),
             pipelines: vec![("text".into(), FramerChoice::Line, DecoderChoice::Text)],
             history: 10000,
+            auto_reconnect: false,
         }
     }
 }
 
 impl ConfigForm {
+    pub fn from_session_config(config: &SessionConfig) -> Self {
+        Self {
+            transport: match &config.transport {
+                TransportConfig::Serial { .. } => TransportChoice::Serial,
+                TransportConfig::Tcp { .. } => TransportChoice::Tcp,
+                TransportConfig::Udp { .. } => TransportChoice::Udp,
+            },
+            port: match &config.transport {
+                TransportConfig::Serial { port, .. } => port.clone(),
+                _ => String::from("/dev/ttyUSB0"),
+            },
+            baud: match &config.transport {
+                TransportConfig::Serial { baud_rate, .. } => *baud_rate,
+                _ => 115200,
+            },
+            addr: match &config.transport {
+                TransportConfig::Tcp { addr } => addr.clone(),
+                _ => String::from("127.0.0.1:8080"),
+            },
+            udp_bind: match &config.transport {
+                TransportConfig::Udp { bind_addr, .. } => bind_addr.clone(),
+                _ => String::from("0.0.0.0:9000"),
+            },
+            udp_remote: match &config.transport {
+                TransportConfig::Udp { remote_addr, .. } => remote_addr.clone().unwrap_or_default(),
+                _ => String::new(),
+            },
+            pipelines: config
+                .pipelines
+                .iter()
+                .map(|pipeline| {
+                    let framer = match &pipeline.framer {
+                        FramerConfig::Line { .. } => FramerChoice::Line,
+                        FramerConfig::Fixed { frame_len } => FramerChoice::Fixed(*frame_len),
+                        FramerConfig::Length { .. } | FramerConfig::Cobs { .. } => {
+                            FramerChoice::Line
+                        }
+                    };
+                    let decoder = match &pipeline.decoder {
+                        DecoderConfig::Text { .. } => DecoderChoice::Text,
+                        DecoderConfig::Hex { .. } => DecoderChoice::Hex,
+                        DecoderConfig::Plot { .. } => DecoderChoice::Plot,
+                    };
+                    (pipeline.name.clone(), framer, decoder)
+                })
+                .collect(),
+            history: config.history_limit,
+            auto_reconnect: config.auto_reconnect,
+        }
+    }
+
     // 把表单数据转换成 xserial-client 的 SessionConfig
     pub fn to_session_config(&self) -> SessionConfig {
         SessionConfig {
@@ -104,14 +157,14 @@ impl ConfigForm {
                 })
                 .collect(),
             history_limit: self.history,
-            auto_reconnect: false,
+            auto_reconnect: self.auto_reconnect,
         }
     }
 }
 
 // ── 渲染函数 ──────────────────────────────────────────────────────
 
-pub fn render(ui: &mut Ui, form: &mut ConfigForm) -> Option<SessionConfig> {
+pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<SessionConfig> {
     let mut result = None;
 
     ScrollArea::vertical().show(ui, |ui| {
@@ -234,9 +287,10 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm) -> Option<SessionConfig> {
             ui.label("History:");
             ui.add(DragValue::new(&mut form.history).range(100..=1_000_000));
         });
+        ui.checkbox(&mut form.auto_reconnect, "Auto reconnect");
 
         ui.separator();
-        if ui.button("✓ Create Session").clicked() {
+        if ui.button(submit_label).clicked() {
             result = Some(form.to_session_config());
         }
     });
