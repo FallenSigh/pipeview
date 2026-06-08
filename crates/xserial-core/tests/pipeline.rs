@@ -5,26 +5,23 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio::time::timeout;
 
 use xserial_core::frame::{
+    Endian, Framer,
     cobs::CobsFramer,
     fixed::FixedLengthFramer,
     length::{LengthConfig, LengthPrefixedFramer},
     line::{LineConfig, LineFramer},
-    Endian, Framer,
 };
 use xserial_core::protocol::{
+    DecodedData, ProtocolDecoder,
     hex::{HexConfig, HexDecoder},
     plot::{PlotConfig, PlotDecoder, PlotFormat, SampleType},
     text::{TextDecoder, TextEncoding},
-    DecodedData, ProtocolDecoder,
 };
 use xserial_core::transport::{Connection, TransportConfig, TransportType};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-async fn read_to_framer(
-    conn: &mut Connection,
-    framer: &mut dyn Framer,
-) -> Vec<Vec<u8>> {
+async fn read_to_framer(conn: &mut Connection, framer: &mut dyn Framer) -> Vec<Vec<u8>> {
     let mut buf = [0u8; 4096];
     let mut all_frames = Vec::new();
 
@@ -384,9 +381,7 @@ async fn connection_reconnect_tcp() {
         stream.write_all(b"first\n").await.unwrap();
     });
 
-    let mut conn = Connection::new(TransportConfig::Tcp {
-        addr: addr.clone(),
-    });
+    let mut conn = Connection::new(TransportConfig::Tcp { addr: addr.clone() });
     conn.connect().await.unwrap();
 
     let mut framer = LineFramer::new(LineConfig::default());

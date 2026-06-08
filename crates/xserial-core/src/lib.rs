@@ -1,7 +1,7 @@
 pub mod error;
-pub mod transport;
-pub mod protocol;
 pub mod frame;
 pub mod pipeline;
+pub mod protocol;
+pub mod transport;
 
 pub use error::{Error, Result};

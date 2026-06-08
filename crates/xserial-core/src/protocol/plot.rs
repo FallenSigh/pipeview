@@ -147,8 +147,7 @@ impl PlotDecoder {
             }
             SampleType::I64 => {
                 let b = [
-                    bytes[0], bytes[1], bytes[2], bytes[3],
-                    bytes[4], bytes[5], bytes[6], bytes[7],
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
                 ];
                 let val = match self.config.endian {
                     Endian::Big => i64::from_be_bytes(b),
@@ -158,8 +157,7 @@ impl PlotDecoder {
             }
             SampleType::U64 => {
                 let b = [
-                    bytes[0], bytes[1], bytes[2], bytes[3],
-                    bytes[4], bytes[5], bytes[6], bytes[7],
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
                 ];
                 let val = match self.config.endian {
                     Endian::Big => u64::from_be_bytes(b),
@@ -177,8 +175,7 @@ impl PlotDecoder {
             }
             SampleType::F64 => {
                 let b = [
-                    bytes[0], bytes[1], bytes[2], bytes[3],
-                    bytes[4], bytes[5], bytes[6], bytes[7],
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
                 ];
                 match self.config.endian {
                     Endian::Big => f64::from_be_bytes(b),
@@ -222,7 +219,8 @@ impl ProtocolDecoder for PlotDecoder {
         }
 
         // Distribute into channels
-        let mut channels: Vec<Vec<f64>> = vec![Vec::with_capacity(samples_per_channel); num_channels];
+        let mut channels: Vec<Vec<f64>> =
+            vec![Vec::with_capacity(samples_per_channel); num_channels];
         match self.config.format {
             PlotFormat::Interleaved | PlotFormat::XY => {
                 for (i, val) in flat.into_iter().enumerate() {
@@ -351,9 +349,14 @@ mod tests {
         let d = PlotDecoder::new(cfg);
         // ch0: 100, 300  ch1: 200, 400
         let data = vec![
-            100u16.to_le_bytes(), 200u16.to_le_bytes(),
-            300u16.to_le_bytes(), 400u16.to_le_bytes(),
-        ].into_iter().flatten().collect::<Vec<u8>>();
+            100u16.to_le_bytes(),
+            200u16.to_le_bytes(),
+            300u16.to_le_bytes(),
+            400u16.to_le_bytes(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<u8>>();
         let result = d.decode(&data).unwrap();
         match result {
             DecodedData::Plot(frame) => {
@@ -376,9 +379,14 @@ mod tests {
         let d = PlotDecoder::new(cfg);
         // ch0: 10, 20  ch1: 30, 40
         let data = vec![
-            10u16.to_be_bytes(), 20u16.to_be_bytes(),
-            30u16.to_be_bytes(), 40u16.to_be_bytes(),
-        ].into_iter().flatten().collect::<Vec<u8>>();
+            10u16.to_be_bytes(),
+            20u16.to_be_bytes(),
+            30u16.to_be_bytes(),
+            40u16.to_be_bytes(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<u8>>();
         let result = d.decode(&data).unwrap();
         match result {
             DecodedData::Plot(frame) => {
@@ -401,9 +409,14 @@ mod tests {
         let d = PlotDecoder::new(cfg);
         // (x,y) pairs: (10, 100), (20, 200)
         let data = vec![
-            10u16.to_le_bytes(), 100u16.to_le_bytes(),
-            20u16.to_le_bytes(), 200u16.to_le_bytes(),
-        ].into_iter().flatten().collect::<Vec<u8>>();
+            10u16.to_le_bytes(),
+            100u16.to_le_bytes(),
+            20u16.to_le_bytes(),
+            200u16.to_le_bytes(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<u8>>();
         let result = d.decode(&data).unwrap();
         match result {
             DecodedData::Plot(frame) => {

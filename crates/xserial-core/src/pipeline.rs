@@ -1,5 +1,6 @@
 use crate::frame::Framer;
 use crate::protocol::{DecodedData, ProtocolDecoder};
+use tracing::debug;
 
 /// A self-contained framing + decoding pipeline.
 ///
@@ -118,6 +119,13 @@ impl MultiPipeline {
                 });
             }
         }
+        if !results.is_empty() {
+            debug!(
+                count = results.len(),
+                bytes = data.len(),
+                "pipeline produced results"
+            );
+        }
         results
     }
 
@@ -168,10 +176,10 @@ mod tests {
     use crate::frame::fixed::FixedLengthFramer;
     use crate::frame::length::{LengthConfig, LengthPrefixedFramer};
     use crate::frame::line::{LineConfig, LineFramer};
+    use crate::protocol::Endian;
     use crate::protocol::hex::{HexConfig, HexDecoder};
     use crate::protocol::plot::{PlotConfig, PlotDecoder, PlotFormat, SampleType};
     use crate::protocol::text::{TextDecoder, TextEncoding};
-    use crate::protocol::Endian;
 
     #[test]
     fn multi_text_and_hex_same_stream() {

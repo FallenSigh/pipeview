@@ -1,4 +1,5 @@
 use super::{Endian, Framer};
+use tracing::{debug, warn};
 
 /// Configuration for the length-prefixed framer.
 #[derive(Debug, Clone)]
@@ -96,6 +97,11 @@ impl Framer for LengthPrefixedFramer {
 
                     // Discard length, re-sync on corrupt frame
                     if self.config.max_payload > 0 && payload_len > self.config.max_payload {
+                        warn!(
+                            claimed = payload_len,
+                            max = self.config.max_payload,
+                            "corrupt length frame, skipping"
+                        );
                         self.buf.drain(..self.config.len_bytes);
                         continue;
                     }
@@ -115,6 +121,7 @@ impl Framer for LengthPrefixedFramer {
                         break;
                     }
                     let frame: Vec<u8> = self.buf.drain(..expected).collect();
+                    debug!(len = frame.len(), "length-prefixed frame extracted");
                     frames.push(frame);
                     self.state = State::ReadingLength;
                 }

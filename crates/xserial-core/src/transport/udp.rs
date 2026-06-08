@@ -17,7 +17,7 @@ pub struct UdpTransport {
     read_buf: Vec<u8>,
     read_pos: usize,
 
-    temp_recv_buf: Vec<u8>, 
+    temp_recv_buf: Vec<u8>,
 }
 
 impl UdpTransport {
@@ -49,7 +49,7 @@ impl AsyncRead for UdpTransport {
         if this.read_pos < this.read_buf.len() {
             let remaining = &this.read_buf[this.read_pos..];
             let to_copy = std::cmp::min(remaining.len(), buf.remaining());
-            
+
             buf.put_slice(&remaining[..to_copy]);
             this.read_pos += to_copy;
 
@@ -81,14 +81,16 @@ impl AsyncRead for UdpTransport {
             socket.poll_recv(cx, &mut temp_buf)
         } else {
             // poll_recv_from 会返回 (usize, SocketAddr)，我们将其映射回统一的 () 类型
-            socket.poll_recv_from(cx, &mut temp_buf).map(|res| res.map(|_| ()))
+            socket
+                .poll_recv_from(cx, &mut temp_buf)
+                .map(|res| res.map(|_| ()))
         };
 
         match poll_result {
             Poll::Ready(Ok(())) => {
                 let filled = temp_buf.filled();
                 let to_copy = std::cmp::min(filled.len(), buf.remaining());
-                
+
                 buf.put_slice(&filled[..to_copy]);
 
                 // 核心逻辑：如果本次读取到的 UDP 包大于外面提供的 buf 的剩余空间
@@ -268,9 +270,7 @@ mod tests {
         let result = Pin::new(&mut t).poll_read(&mut cx, &mut buf);
         match result {
             Poll::Ready(Err(ref e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotConnected),
-            other => panic!(
-                "expected Poll::Ready(Err(NotConnected)), got {other:?}"
-            ),
+            other => panic!("expected Poll::Ready(Err(NotConnected)), got {other:?}"),
         }
     }
 
@@ -282,9 +282,7 @@ mod tests {
         let result = Pin::new(&mut t).poll_write(&mut cx, data);
         match result {
             Poll::Ready(Err(ref e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotConnected),
-            other => panic!(
-                "expected Poll::Ready(Err(NotConnected)), got {other:?}"
-            ),
+            other => panic!("expected Poll::Ready(Err(NotConnected)), got {other:?}"),
         }
     }
 
@@ -322,7 +320,9 @@ mod tests {
         let remote_addr = remote.local_addr().unwrap().to_string();
 
         let mut t = UdpTransport::new("127.0.0.1:0".into(), Some(remote_addr));
-        t.connect().await.expect("connect with remote should succeed");
+        t.connect()
+            .await
+            .expect("connect with remote should succeed");
         assert!(t.is_connected());
 
         t.disconnect().await.expect("disconnect should succeed");

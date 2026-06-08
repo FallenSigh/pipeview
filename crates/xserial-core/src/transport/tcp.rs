@@ -1,4 +1,3 @@
-
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
@@ -10,15 +9,12 @@ use crate::error::Result;
 #[derive(Debug)]
 pub struct TcpTransport {
     stream: Option<TcpStream>,
-    addr: String
+    addr: String,
 }
 
 impl TcpTransport {
     pub fn new(addr: String) -> Self {
-        Self {
-            stream: None,
-            addr
-        }
+        Self { stream: None, addr }
     }
 
     pub fn addr(&self) -> &str {
@@ -281,7 +277,10 @@ mod tests {
     async fn test_disconnect_without_connect() {
         let mut transport = TcpTransport::new("127.0.0.1:8080".into());
         let result = transport.disconnect().await;
-        assert!(result.is_ok(), "disconnect without connect should be a safe no-op");
+        assert!(
+            result.is_ok(),
+            "disconnect without connect should be a safe no-op"
+        );
         assert!(!transport.is_connected());
     }
 

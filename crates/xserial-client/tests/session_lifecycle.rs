@@ -3,11 +3,9 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use xserial_client::config::{
-    DecoderConfig, FramerConfig, PipelineConfig, SessionConfig,
-};
-use xserial_client::session::{Session, SessionEvent};
 use xserial_client::SessionManager;
+use xserial_client::config::{DecoderConfig, FramerConfig, PipelineConfig, SessionConfig};
+use xserial_client::session::{Session, SessionEvent};
 use xserial_core::protocol::DecodedData;
 use xserial_core::transport::TransportConfig;
 
@@ -78,13 +76,17 @@ async fn session_multiple_reads() {
                 SessionEvent::Data(_, entry) => {
                     if let DecodedData::Text(s) = entry.data {
                         texts.push(s);
-                        if texts.len() == 3 { break; }
+                        if texts.len() == 3 {
+                            break;
+                        }
                     }
                 }
                 _ => {}
             }
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     assert_eq!(texts, vec!["a", "b", "c"]);
     handle.close().await.unwrap();
@@ -128,12 +130,16 @@ async fn session_multi_pipeline_text_and_hex() {
             match rx.recv().await.unwrap() {
                 SessionEvent::Data(_, entry) => {
                     results.push((entry.pipeline_name.clone(), entry.data.clone()));
-                    if results.len() == 2 { break; }
+                    if results.len() == 2 {
+                        break;
+                    }
                 }
                 _ => {}
             }
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].0, "text");
@@ -313,11 +319,15 @@ async fn session_handle_subscribe_sees_events() {
 
     // Should see Connected then Data
     let e1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await.unwrap().unwrap();
+        .await
+        .unwrap()
+        .unwrap();
     assert!(matches!(e1, SessionEvent::Connected(7)));
 
     let e2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await.unwrap().unwrap();
+        .await
+        .unwrap()
+        .unwrap();
     match e2 {
         SessionEvent::Data(7, entry) => {
             assert_eq!(entry.pipeline_name, "text");

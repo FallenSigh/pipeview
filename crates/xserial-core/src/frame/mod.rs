@@ -1,7 +1,7 @@
-pub mod line;
+pub mod cobs;
 pub mod fixed;
 pub mod length;
-pub mod cobs;
+pub mod line;
 
 pub use crate::protocol::Endian;
 

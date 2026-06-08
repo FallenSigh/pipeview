@@ -1,11 +1,11 @@
-pub mod config;
-pub mod event;
 pub mod cmd;
+pub mod config;
 pub mod error;
+pub mod event;
 pub mod history;
-pub mod session;
-pub mod manager;
 pub mod lua;
+pub mod manager;
+pub mod session;
 
 pub use config::{DecoderConfig, FramerConfig, PipelineConfig, SessionConfig};
 pub use error::{Error, Result};

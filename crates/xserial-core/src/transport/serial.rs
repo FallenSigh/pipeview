@@ -109,17 +109,22 @@ impl Transport for SerialTransport {
 
     async fn connect(&mut self) -> Result<()> {
         if self.is_connected() {
-            return Ok(())
+            return Ok(());
         }
 
-        info!("Opening serial port {} at {} baud", self.port_name, self.baud_rate);
+        info!(
+            "Opening serial port {} at {} baud",
+            self.port_name, self.baud_rate
+        );
 
         let port = tokio_serial::new(&self.port_name, self.baud_rate)
             .open_native_async()
-            .map_err(|e| crate::error::Error::ConnectionFailed(format!(
-                "Failed to open {}: {}",
-                self.port_name, e
-            )))?;
+            .map_err(|e| {
+                crate::error::Error::ConnectionFailed(format!(
+                    "Failed to open {}: {}",
+                    self.port_name, e
+                ))
+            })?;
 
         debug!("Serial port {} opened successfully", self.port_name);
         self.port = Some(port);
@@ -152,12 +157,8 @@ mod tests {
         unsafe fn raw_wake_by_ref(_: *const ()) {}
         unsafe fn raw_drop(_: *const ()) {}
 
-        static RAW_VTABLE: RawWakerVTable = RawWakerVTable::new(
-            raw_clone,
-            raw_wake,
-            raw_wake_by_ref,
-            raw_drop,
-        );
+        static RAW_VTABLE: RawWakerVTable =
+            RawWakerVTable::new(raw_clone, raw_wake, raw_wake_by_ref, raw_drop);
 
         unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &RAW_VTABLE)) }
     }

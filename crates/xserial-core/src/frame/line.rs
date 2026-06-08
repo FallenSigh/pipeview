@@ -1,4 +1,5 @@
 use super::Framer;
+use tracing::debug;
 
 /// Line-delimited framer.
 ///
@@ -54,6 +55,13 @@ impl Framer for LineFramer {
             }
         }
 
+        if !frames.is_empty() {
+            debug!(
+                count = frames.len(),
+                pending = self.buf.len(),
+                "line frames extracted"
+            );
+        }
         frames
     }
 

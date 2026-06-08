@@ -1,6 +1,6 @@
-pub mod text;
 pub mod hex;
 pub mod plot;
+pub mod text;
 
 use serde::{Deserialize, Serialize};
 

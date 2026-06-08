@@ -1,11 +1,12 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tracing::info;
 
+use crate::error::Result;
 use crate::transport::serial::SerialTransport;
 use crate::transport::tcp::TcpTransport;
 use crate::transport::udp::UdpTransport;
-use crate::error::Result;
 
 pub mod serial;
 pub mod tcp;
@@ -15,7 +16,7 @@ pub mod udp;
 pub enum TransportType {
     Serial,
     Tcp,
-    Udp
+    Udp,
 }
 
 impl std::fmt::Display for TransportType {
@@ -23,7 +24,7 @@ impl std::fmt::Display for TransportType {
         match self {
             TransportType::Serial => write!(f, "Serial"),
             TransportType::Tcp => write!(f, "Tcp"),
-            TransportType::Udp => write!(f, "Udp")
+            TransportType::Udp => write!(f, "Udp"),
         }
     }
 }
@@ -32,15 +33,15 @@ impl std::fmt::Display for TransportType {
 pub enum TransportConfig {
     Serial {
         port: String,
-        baud_rate: u32
+        baud_rate: u32,
     },
     Tcp {
-        addr: String
+        addr: String,
     },
     Udp {
         bind_addr: String,
-        remote_addr: Option<String>
-    }
+        remote_addr: Option<String>,
+    },
 }
 
 #[async_trait]
@@ -98,6 +99,7 @@ impl Connection {
     }
 
     pub async fn connect(&mut self) -> Result<()> {
+        info!(transport = ?self.transport_type(), name = self.name(), "Connection connecting");
         match self {
             Connection::Serial(t) => t.connect().await,
             Connection::Tcp(t) => t.connect().await,
@@ -106,6 +108,7 @@ impl Connection {
     }
 
     pub async fn disconnect(&mut self) -> Result<()> {
+        info!(name = self.name(), "Connection disconnecting");
         match self {
             Connection::Serial(t) => t.disconnect().await,
             Connection::Tcp(t) => t.disconnect().await,
@@ -237,7 +240,11 @@ mod tests {
 
     #[test]
     fn test_transport_type_roundtrip() {
-        for original in [TransportType::Serial, TransportType::Tcp, TransportType::Udp] {
+        for original in [
+            TransportType::Serial,
+            TransportType::Tcp,
+            TransportType::Udp,
+        ] {
             let json = serde_json::to_string(&original).unwrap();
             let roundtripped: TransportType = serde_json::from_str(&json).unwrap();
             assert_eq!(original, roundtripped);
@@ -503,8 +510,7 @@ mod tests {
         unsafe fn wake(_: *const ()) {}
         unsafe fn wake_by_ref(_: *const ()) {}
         unsafe fn drop(_: *const ()) {}
-        static VTABLE: RawWakerVTable =
-            RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
         unsafe { std::task::Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
     }
 
@@ -530,9 +536,9 @@ mod tests {
 
     #[test]
     fn test_connection_poll_read_not_connected() {
-        use tokio::io::ReadBuf;
         use std::pin::Pin;
         use std::task::{Context, Poll};
+        use tokio::io::ReadBuf;
 
         for mut conn in [serial_conn(), tcp_conn(), udp_conn()] {
             let pinned = Pin::new(&mut conn);
@@ -719,9 +725,13 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            AsyncWriteExt::write_all(&mut stream, b"hello").await.unwrap();
+            AsyncWriteExt::write_all(&mut stream, b"hello")
+                .await
+                .unwrap();
             let mut buf = [0u8; 5];
-            AsyncReadExt::read_exact(&mut stream, &mut buf).await.unwrap();
+            AsyncReadExt::read_exact(&mut stream, &mut buf)
+                .await
+                .unwrap();
             assert_eq!(&buf, b"world");
         });
 
@@ -761,7 +771,9 @@ mod tests {
         remote.send_to(b"world", from).await.unwrap();
 
         let mut read_buf = [0u8; 5];
-        AsyncReadExt::read_exact(&mut conn, &mut read_buf).await.unwrap();
+        AsyncReadExt::read_exact(&mut conn, &mut read_buf)
+            .await
+            .unwrap();
         assert_eq!(&read_buf, b"world");
     }
 }

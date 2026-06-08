@@ -1,4 +1,5 @@
 use super::Framer;
+use tracing::{debug, warn};
 
 /// COBS (Consistent Overhead Byte Stuffing) framer.
 ///
@@ -38,9 +39,16 @@ impl Framer for CobsFramer {
         for &byte in data {
             if byte == 0x00 {
                 if !self.buf.is_empty() {
-                    // Decode failed (corrupt packet) — discard and continue
+                    let buf_len = self.buf.len();
                     if let Some(decoded) = cobs_decode(&self.buf) {
+                        debug!(
+                            encoded_len = buf_len,
+                            decoded_len = decoded.len(),
+                            "COBS frame decoded"
+                        );
                         frames.push(decoded);
+                    } else {
+                        warn!(len = buf_len, "corrupt COBS packet discarded");
                     }
                     self.buf.clear();
                 }
