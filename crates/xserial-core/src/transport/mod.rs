@@ -4,13 +4,31 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::info;
 
 use crate::error::Result;
-use crate::transport::serial::SerialTransport;
+use crate::transport::serial::{
+    SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits, SerialTransport,
+};
 use crate::transport::tcp::TcpTransport;
 use crate::transport::udp::UdpTransport;
 
 pub mod serial;
 pub mod tcp;
 pub mod udp;
+
+fn default_serial_data_bits() -> SerialDataBits {
+    SerialDataBits::Eight
+}
+
+fn default_serial_parity() -> SerialParity {
+    SerialParity::None
+}
+
+fn default_serial_stop_bits() -> SerialStopBits {
+    SerialStopBits::One
+}
+
+fn default_serial_flow_control() -> SerialFlowControl {
+    SerialFlowControl::None
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransportType {
@@ -34,6 +52,14 @@ pub enum TransportConfig {
     Serial {
         port: String,
         baud_rate: u32,
+        #[serde(default = "default_serial_data_bits")]
+        data_bits: SerialDataBits,
+        #[serde(default = "default_serial_parity")]
+        parity: SerialParity,
+        #[serde(default = "default_serial_stop_bits")]
+        stop_bits: SerialStopBits,
+        #[serde(default = "default_serial_flow_control")]
+        flow_control: SerialFlowControl,
     },
     Tcp {
         addr: String,
@@ -63,9 +89,21 @@ pub enum Connection {
 impl Connection {
     pub fn new(config: TransportConfig) -> Self {
         match config {
-            TransportConfig::Serial { port, baud_rate } => {
-                Connection::Serial(SerialTransport::new(port, baud_rate))
-            }
+            TransportConfig::Serial {
+                port,
+                baud_rate,
+                data_bits,
+                parity,
+                stop_bits,
+                flow_control,
+            } => Connection::Serial(SerialTransport::new(
+                port,
+                baud_rate,
+                data_bits,
+                parity,
+                stop_bits,
+                flow_control,
+            )),
             TransportConfig::Tcp { addr } => Connection::Tcp(TcpTransport::new(addr)),
             TransportConfig::Udp {
                 bind_addr,
@@ -170,6 +208,20 @@ impl AsyncWrite for Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::serial::{
+        SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits,
+    };
+
+    fn serial_config(port: &str, baud_rate: u32) -> TransportConfig {
+        TransportConfig::Serial {
+            port: port.into(),
+            baud_rate,
+            data_bits: SerialDataBits::Eight,
+            parity: SerialParity::None,
+            stop_bits: SerialStopBits::One,
+            flow_control: SerialFlowControl::None,
+        }
+    }
 
     #[test]
     fn test_transport_type_display() {
@@ -256,6 +308,10 @@ mod tests {
         let cfg = TransportConfig::Serial {
             port: "COM1".into(),
             baud_rate: 115200,
+            data_bits: SerialDataBits::Eight,
+            parity: SerialParity::None,
+            stop_bits: SerialStopBits::One,
+            flow_control: SerialFlowControl::None,
         };
         let _ = format!("{:?}", cfg);
 
@@ -273,10 +329,7 @@ mod tests {
 
     #[test]
     fn test_transport_config_clone() {
-        let original = TransportConfig::Serial {
-            port: "COM1".into(),
-            baud_rate: 115200,
-        };
+        let original = serial_config("COM1", 115200);
         let cloned = original.clone();
         assert_eq!(format!("{:?}", original), format!("{:?}", cloned));
 
@@ -296,13 +349,14 @@ mod tests {
 
     #[test]
     fn test_transport_config_serialize_serial() {
-        let cfg = TransportConfig::Serial {
-            port: "COM1".into(),
-            baud_rate: 115200,
-        };
+        let cfg = serial_config("COM1", 115200);
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(json.contains("COM1"));
         assert!(json.contains("115200"));
+        assert!(json.contains("data_bits"));
+        assert!(json.contains("parity"));
+        assert!(json.contains("stop_bits"));
+        assert!(json.contains("flow_control"));
     }
 
     #[test]
@@ -310,9 +364,44 @@ mod tests {
         let json = r#"{"Serial":{"port":"COM1","baud_rate":9600}}"#;
         let cfg: TransportConfig = serde_json::from_str(json).unwrap();
         match cfg {
-            TransportConfig::Serial { port, baud_rate } => {
+            TransportConfig::Serial {
+                port,
+                baud_rate,
+                data_bits,
+                parity,
+                stop_bits,
+                flow_control,
+            } => {
                 assert_eq!(port, "COM1");
                 assert_eq!(baud_rate, 9600);
+                assert_eq!(data_bits, SerialDataBits::Eight);
+                assert_eq!(parity, SerialParity::None);
+                assert_eq!(stop_bits, SerialStopBits::One);
+                assert_eq!(flow_control, SerialFlowControl::None);
+            }
+            _ => panic!("expected Serial variant"),
+        }
+    }
+
+    #[test]
+    fn test_transport_config_deserialize_serial_with_explicit_options() {
+        let json = r#"{"Serial":{"port":"COM2","baud_rate":57600,"data_bits":"Seven","parity":"Even","stop_bits":"Two","flow_control":"Hardware"}}"#;
+        let cfg: TransportConfig = serde_json::from_str(json).unwrap();
+        match cfg {
+            TransportConfig::Serial {
+                port,
+                baud_rate,
+                data_bits,
+                parity,
+                stop_bits,
+                flow_control,
+            } => {
+                assert_eq!(port, "COM2");
+                assert_eq!(baud_rate, 57600);
+                assert_eq!(data_bits, SerialDataBits::Seven);
+                assert_eq!(parity, SerialParity::Even);
+                assert_eq!(stop_bits, SerialStopBits::Two);
+                assert_eq!(flow_control, SerialFlowControl::Hardware);
             }
             _ => panic!("expected Serial variant"),
         }
@@ -393,10 +482,7 @@ mod tests {
     #[test]
     fn test_transport_config_roundtrip() {
         let configs = vec![
-            TransportConfig::Serial {
-                port: "COM3".into(),
-                baud_rate: 57600,
-            },
+            serial_config("COM3", 57600),
             TransportConfig::Tcp {
                 addr: "10.0.0.1:9999".into(),
             },
@@ -425,10 +511,7 @@ mod tests {
 
     #[test]
     fn test_connection_new_serial() {
-        let conn = Connection::new(TransportConfig::Serial {
-            port: "COM1".into(),
-            baud_rate: 115200,
-        });
+        let conn = Connection::new(serial_config("COM1", 115200));
         assert_eq!(conn.transport_type(), TransportType::Serial);
         assert_eq!(conn.name(), "COM1");
         assert!(!conn.is_connected());
@@ -468,10 +551,7 @@ mod tests {
 
     #[test]
     fn test_connection_is_connected_default() {
-        let serial = Connection::new(TransportConfig::Serial {
-            port: "COM1".into(),
-            baud_rate: 9600,
-        });
+        let serial = Connection::new(serial_config("COM1", 9600));
         let tcp = Connection::new(TransportConfig::Tcp {
             addr: "127.0.0.1:8080".into(),
         });
@@ -486,10 +566,7 @@ mod tests {
 
     #[test]
     fn test_connection_debug() {
-        let serial = Connection::new(TransportConfig::Serial {
-            port: "COM1".into(),
-            baud_rate: 115200,
-        });
+        let serial = Connection::new(serial_config("COM1", 115200));
         let tcp = Connection::new(TransportConfig::Tcp {
             addr: "127.0.0.1:8080".into(),
         });
@@ -515,10 +592,7 @@ mod tests {
     }
 
     fn serial_conn() -> Connection {
-        Connection::new(TransportConfig::Serial {
-            port: "COM1".into(),
-            baud_rate: 115200,
-        })
+        Connection::new(serial_config("COM1", 115200))
     }
 
     fn tcp_conn() -> Connection {

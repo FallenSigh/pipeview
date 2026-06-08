@@ -1,4 +1,5 @@
 pub mod hex;
+pub mod mixed;
 pub mod plot;
 pub mod text;
 

@@ -5,10 +5,12 @@ use xserial_core::frame::{
     fixed::FixedLengthFramer,
     length::{LengthConfig, LengthPrefixedFramer},
     line::{LineConfig, LineFramer},
+    mixed::{MixedTextPlotConfig as MixedFramerConfig, MixedTextPlotFramer},
 };
 use xserial_core::protocol::{
     ProtocolDecoder,
     hex::{HexConfig, HexDecoder},
+    mixed::{MixedTextPlotConfig as MixedDecoderConfig, MixedTextPlotDecoder},
     plot::{PlotConfig, PlotDecoder, PlotFormat, SampleType},
     text::{TextDecoder, TextEncoding},
 };
@@ -38,6 +40,14 @@ pub enum FramerConfig {
     Cobs {
         #[serde(default = "default_max_frame")]
         max_frame: usize,
+    },
+    MixedTextPlot {
+        #[serde(default = "default_true")]
+        strip_cr: bool,
+        #[serde(default = "default_max_line")]
+        max_line_len: usize,
+        #[serde(default = "default_max_frame")]
+        max_plot_frame: usize,
     },
 }
 
@@ -80,6 +90,15 @@ impl FramerConfig {
                 max_payload,
             })),
             FramerConfig::Cobs { max_frame } => Box::new(CobsFramer::new(max_frame)),
+            FramerConfig::MixedTextPlot {
+                strip_cr,
+                max_line_len,
+                max_plot_frame,
+            } => Box::new(MixedTextPlotFramer::new(MixedFramerConfig {
+                strip_cr,
+                max_line_len,
+                max_plot_frame,
+            })),
         }
     }
 }
@@ -108,6 +127,10 @@ pub enum DecoderConfig {
         channels: usize,
         #[serde(default)]
         format: PlotFormat,
+    },
+    MixedTextPlot {
+        #[serde(default)]
+        encoding: TextEncoding,
     },
 }
 
@@ -144,6 +167,9 @@ impl DecoderConfig {
                 channels,
                 format,
             })),
+            DecoderConfig::MixedTextPlot { encoding } => {
+                Box::new(MixedTextPlotDecoder::new(MixedDecoderConfig { encoding }))
+            }
         }
     }
 }
@@ -241,6 +267,25 @@ mod tests {
     }
 
     #[test]
+    fn framer_mixed_serde() {
+        let json =
+            r#"{"MixedTextPlot":{"strip_cr":true,"max_line_len":4096,"max_plot_frame":8192}}"#;
+        let cfg: FramerConfig = serde_json::from_str(json).unwrap();
+        match cfg {
+            FramerConfig::MixedTextPlot {
+                strip_cr,
+                max_line_len,
+                max_plot_frame,
+            } => {
+                assert!(strip_cr);
+                assert_eq!(max_line_len, 4096);
+                assert_eq!(max_plot_frame, 8192);
+            }
+            _ => panic!("expected MixedTextPlot"),
+        }
+    }
+
+    #[test]
     fn decoder_text_serde() {
         let cfg: DecoderConfig = serde_json::from_str(r#"{"Text":{"encoding":"Latin1"}}"#).unwrap();
         match cfg {
@@ -291,6 +336,16 @@ mod tests {
     }
 
     #[test]
+    fn decoder_mixed_serde() {
+        let cfg: DecoderConfig =
+            serde_json::from_str(r#"{"MixedTextPlot":{"encoding":"Utf8"}}"#).unwrap();
+        match cfg {
+            DecoderConfig::MixedTextPlot { encoding } => assert_eq!(encoding, TextEncoding::Utf8),
+            _ => panic!("expected MixedTextPlot"),
+        }
+    }
+
+    #[test]
     fn session_config_full_roundtrip() {
         let json = r#"{
             "transport":{"Tcp":{"addr":"192.168.1.1:9999"}},
@@ -327,6 +382,11 @@ mod tests {
                 max_payload: 65536,
             },
             FramerConfig::Cobs { max_frame: 1024 },
+            FramerConfig::MixedTextPlot {
+                strip_cr: true,
+                max_line_len: 256,
+                max_plot_frame: 1024,
+            },
         ] {
             let f = cfg.build();
             assert_eq!(f.pending_len(), 0);
@@ -364,6 +424,14 @@ mod tests {
             .build()
             .name(),
             "Plot"
+        );
+        assert_eq!(
+            DecoderConfig::MixedTextPlot {
+                encoding: TextEncoding::Utf8
+            }
+            .build()
+            .name(),
+            "MixedTextPlot"
         );
     }
 }

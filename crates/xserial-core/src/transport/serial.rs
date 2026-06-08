@@ -1,24 +1,107 @@
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, SerialStream, StopBits};
 use tracing::{debug, info, warn};
 
 use super::{Transport, TransportType};
 use crate::error::Result;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SerialDataBits {
+    Five,
+    Six,
+    Seven,
+    Eight,
+}
+
+impl From<SerialDataBits> for DataBits {
+    fn from(value: SerialDataBits) -> Self {
+        match value {
+            SerialDataBits::Five => DataBits::Five,
+            SerialDataBits::Six => DataBits::Six,
+            SerialDataBits::Seven => DataBits::Seven,
+            SerialDataBits::Eight => DataBits::Eight,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SerialParity {
+    None,
+    Odd,
+    Even,
+}
+
+impl From<SerialParity> for Parity {
+    fn from(value: SerialParity) -> Self {
+        match value {
+            SerialParity::None => Parity::None,
+            SerialParity::Odd => Parity::Odd,
+            SerialParity::Even => Parity::Even,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SerialStopBits {
+    One,
+    Two,
+}
+
+impl From<SerialStopBits> for StopBits {
+    fn from(value: SerialStopBits) -> Self {
+        match value {
+            SerialStopBits::One => StopBits::One,
+            SerialStopBits::Two => StopBits::Two,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SerialFlowControl {
+    None,
+    Software,
+    Hardware,
+}
+
+impl From<SerialFlowControl> for FlowControl {
+    fn from(value: SerialFlowControl) -> Self {
+        match value {
+            SerialFlowControl::None => FlowControl::None,
+            SerialFlowControl::Software => FlowControl::Software,
+            SerialFlowControl::Hardware => FlowControl::Hardware,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct SerialTransport {
     port: Option<SerialStream>,
     port_name: String,
     baud_rate: u32,
+    data_bits: SerialDataBits,
+    parity: SerialParity,
+    stop_bits: SerialStopBits,
+    flow_control: SerialFlowControl,
 }
 
 impl SerialTransport {
-    pub fn new(port_name: String, baud_rate: u32) -> Self {
+    pub fn new(
+        port_name: String,
+        baud_rate: u32,
+        data_bits: SerialDataBits,
+        parity: SerialParity,
+        stop_bits: SerialStopBits,
+        flow_control: SerialFlowControl,
+    ) -> Self {
         Self {
             port: None,
             port_name,
             baud_rate,
+            data_bits,
+            parity,
+            stop_bits,
+            flow_control,
         }
     }
 
@@ -38,6 +121,22 @@ impl SerialTransport {
 
     pub fn baud_rate(&self) -> u32 {
         self.baud_rate
+    }
+
+    pub fn data_bits(&self) -> SerialDataBits {
+        self.data_bits
+    }
+
+    pub fn parity(&self) -> SerialParity {
+        self.parity
+    }
+
+    pub fn stop_bits(&self) -> SerialStopBits {
+        self.stop_bits
+    }
+
+    pub fn flow_control(&self) -> SerialFlowControl {
+        self.flow_control
     }
 }
 
@@ -113,11 +212,20 @@ impl Transport for SerialTransport {
         }
 
         info!(
-            "Opening serial port {} at {} baud",
-            self.port_name, self.baud_rate
+            "Opening serial port {} at {} baud ({:?}, {:?}, {:?}, {:?})",
+            self.port_name,
+            self.baud_rate,
+            self.data_bits,
+            self.parity,
+            self.stop_bits,
+            self.flow_control
         );
 
         let port = tokio_serial::new(&self.port_name, self.baud_rate)
+            .data_bits(self.data_bits.into())
+            .parity(self.parity.into())
+            .stop_bits(self.stop_bits.into())
+            .flow_control(self.flow_control.into())
             .open_native_async()
             .map_err(|e| {
                 crate::error::Error::ConnectionFailed(format!(
@@ -167,33 +275,72 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let transport = SerialTransport::new("COM1".into(), 115200);
+        let transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         assert_eq!(transport.port_name(), "COM1");
         assert_eq!(transport.baud_rate(), 115200);
     }
 
     #[test]
     fn test_new_different_params() {
-        let transport = SerialTransport::new("COM3".into(), 9600);
+        let transport = SerialTransport::new(
+            "COM3".into(),
+            9600,
+            SerialDataBits::Seven,
+            SerialParity::Even,
+            SerialStopBits::Two,
+            SerialFlowControl::Hardware,
+        );
         assert_eq!(transport.port_name(), "COM3");
         assert_eq!(transport.baud_rate(), 9600);
+        assert_eq!(transport.data_bits(), SerialDataBits::Seven);
+        assert_eq!(transport.parity(), SerialParity::Even);
+        assert_eq!(transport.stop_bits(), SerialStopBits::Two);
+        assert_eq!(transport.flow_control(), SerialFlowControl::Hardware);
     }
 
     #[test]
     fn test_name() {
-        let transport = SerialTransport::new("COM1".into(), 115200);
+        let transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         assert_eq!(transport.name(), "COM1");
     }
 
     #[test]
     fn test_transport_type() {
-        let transport = SerialTransport::new("COM1".into(), 115200);
+        let transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         assert_eq!(transport.transport_type(), TransportType::Serial);
     }
 
     #[test]
     fn test_is_connected_false_by_default() {
-        let transport = SerialTransport::new("COM1".into(), 115200);
+        let transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         assert!(!transport.is_connected());
     }
 
@@ -214,7 +361,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_poll_read_not_connected() {
-        let mut transport = SerialTransport::new("COM1".into(), 115200);
+        let mut transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         let pinned = Pin::new(&mut transport);
         let mut buf_data = [0u8; 16];
         let mut buf = ReadBuf::new(&mut buf_data);
@@ -230,7 +384,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_poll_write_not_connected() {
-        let mut transport = SerialTransport::new("COM1".into(), 115200);
+        let mut transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         let pinned = Pin::new(&mut transport);
         let data = b"hello";
         let waker = noop_waker();
@@ -243,7 +404,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_poll_flush_not_connected() {
-        let mut transport = SerialTransport::new("COM1".into(), 115200);
+        let mut transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         let pinned = Pin::new(&mut transport);
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
@@ -255,7 +423,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_poll_shutdown_not_connected() {
-        let mut transport = SerialTransport::new("COM1".into(), 115200);
+        let mut transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         let pinned = Pin::new(&mut transport);
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
@@ -269,19 +444,40 @@ mod tests {
 
     #[test]
     fn test_transport_name() {
-        let transport = SerialTransport::new("COM1".into(), 115200);
+        let transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         assert_eq!(transport.name(), "COM1");
     }
 
     #[test]
     fn test_transport_transport_type() {
-        let transport = SerialTransport::new("COM1".into(), 115200);
+        let transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         assert_eq!(transport.transport_type(), TransportType::Serial);
     }
 
     #[test]
     fn test_transport_is_connected() {
-        let transport = SerialTransport::new("COM1".into(), 115200);
+        let transport = SerialTransport::new(
+            "COM1".into(),
+            115200,
+            SerialDataBits::Eight,
+            SerialParity::None,
+            SerialStopBits::One,
+            SerialFlowControl::None,
+        );
         assert!(!transport.is_connected());
     }
 }

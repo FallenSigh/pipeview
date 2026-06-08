@@ -78,6 +78,7 @@ pub struct PlotFrame {
     pub channels: Vec<Vec<f64>>,
     pub raw: Vec<u8>,
     pub sample_type: SampleType,
+    pub format: PlotFormat,
 }
 
 impl PlotFrame {
@@ -245,6 +246,7 @@ impl ProtocolDecoder for PlotDecoder {
             channels,
             raw: frame.to_vec(),
             sample_type: self.config.sample_type,
+            format: self.config.format,
         }))
     }
 }
@@ -490,6 +492,7 @@ mod tests {
             channels: vec![],
             raw: vec![],
             sample_type: SampleType::U8,
+            format: PlotFormat::Interleaved,
         };
         assert_eq!(frame.sample_count(), 0);
     }
@@ -507,6 +510,7 @@ mod tests {
         match result {
             DecodedData::Plot(frame) => {
                 assert_eq!(frame.raw, data);
+                assert_eq!(frame.format, PlotFormat::Interleaved);
             }
             other => panic!("expected Plot, got {:?}", other),
         }

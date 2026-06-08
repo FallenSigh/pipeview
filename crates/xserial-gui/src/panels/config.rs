@@ -1,6 +1,10 @@
 use egui::{ComboBox, DragValue, ScrollArea, TextEdit, Ui};
 use xserial_client::config::{DecoderConfig, FramerConfig, PipelineConfig, SessionConfig};
+use xserial_core::protocol::plot::PlotFormat;
 use xserial_core::transport::TransportConfig;
+use xserial_core::transport::serial::{
+    SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits,
+};
 
 // ── 表单数据结构（简化版，方便 UI 渲染）────────────────────────────
 
@@ -9,12 +13,25 @@ pub struct ConfigForm {
     pub transport: TransportChoice,
     pub port: String,
     pub baud: u32,
+    pub serial_data_bits: SerialDataBits,
+    pub serial_parity: SerialParity,
+    pub serial_stop_bits: SerialStopBits,
+    pub serial_flow_control: SerialFlowControl,
     pub addr: String,
     pub udp_bind: String,
     pub udp_remote: String,
-    pub pipelines: Vec<(String, FramerChoice, DecoderChoice)>,
+    pub pipelines: Vec<PipelineForm>,
     pub history: usize,
     pub auto_reconnect: bool,
+}
+
+#[derive(Clone)]
+pub struct PipelineForm {
+    pub name: String,
+    pub framer: FramerChoice,
+    pub decoder: DecoderChoice,
+    pub plot_channels: usize,
+    pub plot_format: PlotFormat,
 }
 
 #[derive(Clone, PartialEq)]
@@ -28,6 +45,7 @@ pub enum TransportChoice {
 pub enum FramerChoice {
     Line,
     Fixed(usize),
+    MixedTextPlot,
 }
 
 #[derive(Clone, PartialEq)]
@@ -35,6 +53,7 @@ pub enum DecoderChoice {
     Text,
     Hex,
     Plot,
+    MixedTextPlot,
 }
 
 impl Default for ConfigForm {
@@ -43,10 +62,20 @@ impl Default for ConfigForm {
             transport: TransportChoice::Tcp,
             port: "/dev/ttyUSB0".into(),
             baud: 115200,
+            serial_data_bits: SerialDataBits::Eight,
+            serial_parity: SerialParity::None,
+            serial_stop_bits: SerialStopBits::One,
+            serial_flow_control: SerialFlowControl::None,
             addr: "127.0.0.1:8080".into(),
             udp_bind: "0.0.0.0:9000".into(),
             udp_remote: String::new(),
-            pipelines: vec![("text".into(), FramerChoice::Line, DecoderChoice::Text)],
+            pipelines: vec![PipelineForm {
+                name: "text".into(),
+                framer: FramerChoice::Line,
+                decoder: DecoderChoice::Text,
+                plot_channels: 1,
+                plot_format: PlotFormat::Interleaved,
+            }],
             history: 10000,
             auto_reconnect: false,
         }
@@ -69,6 +98,22 @@ impl ConfigForm {
                 TransportConfig::Serial { baud_rate, .. } => *baud_rate,
                 _ => 115200,
             },
+            serial_data_bits: match &config.transport {
+                TransportConfig::Serial { data_bits, .. } => *data_bits,
+                _ => SerialDataBits::Eight,
+            },
+            serial_parity: match &config.transport {
+                TransportConfig::Serial { parity, .. } => *parity,
+                _ => SerialParity::None,
+            },
+            serial_stop_bits: match &config.transport {
+                TransportConfig::Serial { stop_bits, .. } => *stop_bits,
+                _ => SerialStopBits::One,
+            },
+            serial_flow_control: match &config.transport {
+                TransportConfig::Serial { flow_control, .. } => *flow_control,
+                _ => SerialFlowControl::None,
+            },
             addr: match &config.transport {
                 TransportConfig::Tcp { addr } => addr.clone(),
                 _ => String::from("127.0.0.1:8080"),
@@ -88,6 +133,7 @@ impl ConfigForm {
                     let framer = match &pipeline.framer {
                         FramerConfig::Line { .. } => FramerChoice::Line,
                         FramerConfig::Fixed { frame_len } => FramerChoice::Fixed(*frame_len),
+                        FramerConfig::MixedTextPlot { .. } => FramerChoice::MixedTextPlot,
                         FramerConfig::Length { .. } | FramerConfig::Cobs { .. } => {
                             FramerChoice::Line
                         }
@@ -96,8 +142,23 @@ impl ConfigForm {
                         DecoderConfig::Text { .. } => DecoderChoice::Text,
                         DecoderConfig::Hex { .. } => DecoderChoice::Hex,
                         DecoderConfig::Plot { .. } => DecoderChoice::Plot,
+                        DecoderConfig::MixedTextPlot { .. } => DecoderChoice::MixedTextPlot,
                     };
-                    (pipeline.name.clone(), framer, decoder)
+                    let plot_channels = match &pipeline.decoder {
+                        DecoderConfig::Plot { channels, .. } => *channels,
+                        _ => 1,
+                    };
+                    let plot_format = match &pipeline.decoder {
+                        DecoderConfig::Plot { format, .. } => *format,
+                        _ => PlotFormat::Interleaved,
+                    };
+                    PipelineForm {
+                        name: pipeline.name.clone(),
+                        framer,
+                        decoder,
+                        plot_channels,
+                        plot_format,
+                    }
                 })
                 .collect(),
             history: config.history_limit,
@@ -112,6 +173,10 @@ impl ConfigForm {
                 TransportChoice::Serial => TransportConfig::Serial {
                     port: self.port.clone(),
                     baud_rate: self.baud,
+                    data_bits: self.serial_data_bits,
+                    parity: self.serial_parity,
+                    stop_bits: self.serial_stop_bits,
+                    flow_control: self.serial_flow_control,
                 },
                 TransportChoice::Tcp => TransportConfig::Tcp {
                     addr: self.addr.clone(),
@@ -128,16 +193,21 @@ impl ConfigForm {
             pipelines: self
                 .pipelines
                 .iter()
-                .map(|(name, fc, dc)| PipelineConfig {
-                    name: name.clone(),
-                    framer: match fc {
+                .map(|pipeline| PipelineConfig {
+                    name: pipeline.name.clone(),
+                    framer: match &pipeline.framer {
                         FramerChoice::Line => FramerConfig::Line {
                             strip_cr: true,
                             max_line_len: 1_048_576,
                         },
                         FramerChoice::Fixed(n) => FramerConfig::Fixed { frame_len: *n },
+                        FramerChoice::MixedTextPlot => FramerConfig::MixedTextPlot {
+                            strip_cr: true,
+                            max_line_len: 1_048_576,
+                            max_plot_frame: 1_048_576,
+                        },
                     },
-                    decoder: match dc {
+                    decoder: match &pipeline.decoder {
                         DecoderChoice::Text => DecoderConfig::Text {
                             encoding: xserial_core::protocol::text::TextEncoding::Utf8,
                         },
@@ -150,8 +220,11 @@ impl ConfigForm {
                         DecoderChoice::Plot => DecoderConfig::Plot {
                             sample_type: xserial_core::protocol::plot::SampleType::F32,
                             endian: xserial_core::protocol::Endian::Little,
-                            channels: 1,
-                            format: xserial_core::protocol::plot::PlotFormat::Interleaved,
+                            channels: pipeline.plot_channels.max(1),
+                            format: pipeline.plot_format,
+                        },
+                        DecoderChoice::MixedTextPlot => DecoderConfig::MixedTextPlot {
+                            encoding: xserial_core::protocol::text::TextEncoding::Utf8,
                         },
                     },
                 })
@@ -166,6 +239,7 @@ impl ConfigForm {
 
 pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<SessionConfig> {
     let mut result = None;
+    let mut validation_errors = Vec::new();
 
     ScrollArea::vertical().show(ui, |ui| {
         ui.heading("Transport");
@@ -194,6 +268,106 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
                     ui.label("Baud:");
                     ui.add(DragValue::new(&mut form.baud).range(300..=12_000_000));
                 });
+                ui.horizontal(|ui| {
+                    ui.label("Data bits:");
+                    ComboBox::from_id_salt("serial_data_bits")
+                        .selected_text(match form.serial_data_bits {
+                            SerialDataBits::Five => "5",
+                            SerialDataBits::Six => "6",
+                            SerialDataBits::Seven => "7",
+                            SerialDataBits::Eight => "8",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut form.serial_data_bits,
+                                SerialDataBits::Five,
+                                "5",
+                            );
+                            ui.selectable_value(
+                                &mut form.serial_data_bits,
+                                SerialDataBits::Six,
+                                "6",
+                            );
+                            ui.selectable_value(
+                                &mut form.serial_data_bits,
+                                SerialDataBits::Seven,
+                                "7",
+                            );
+                            ui.selectable_value(
+                                &mut form.serial_data_bits,
+                                SerialDataBits::Eight,
+                                "8",
+                            );
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Parity:");
+                    ComboBox::from_id_salt("serial_parity")
+                        .selected_text(match form.serial_parity {
+                            SerialParity::None => "None",
+                            SerialParity::Odd => "Odd",
+                            SerialParity::Even => "Even",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut form.serial_parity,
+                                SerialParity::None,
+                                "None",
+                            );
+                            ui.selectable_value(&mut form.serial_parity, SerialParity::Odd, "Odd");
+                            ui.selectable_value(
+                                &mut form.serial_parity,
+                                SerialParity::Even,
+                                "Even",
+                            );
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Stop bits:");
+                    ComboBox::from_id_salt("serial_stop_bits")
+                        .selected_text(match form.serial_stop_bits {
+                            SerialStopBits::One => "1",
+                            SerialStopBits::Two => "2",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut form.serial_stop_bits,
+                                SerialStopBits::One,
+                                "1",
+                            );
+                            ui.selectable_value(
+                                &mut form.serial_stop_bits,
+                                SerialStopBits::Two,
+                                "2",
+                            );
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Flow:");
+                    ComboBox::from_id_salt("serial_flow_control")
+                        .selected_text(match form.serial_flow_control {
+                            SerialFlowControl::None => "None",
+                            SerialFlowControl::Software => "Software",
+                            SerialFlowControl::Hardware => "Hardware",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut form.serial_flow_control,
+                                SerialFlowControl::None,
+                                "None",
+                            );
+                            ui.selectable_value(
+                                &mut form.serial_flow_control,
+                                SerialFlowControl::Software,
+                                "Software",
+                            );
+                            ui.selectable_value(
+                                &mut form.serial_flow_control,
+                                SerialFlowControl::Hardware,
+                                "Hardware",
+                            );
+                        });
+                });
             }
             TransportChoice::Tcp => {
                 ui.horizontal(|ui| {
@@ -219,47 +393,60 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
         let mut remove = None;
 
         // 管道列表
-        for (i, (name, fc, dc)) in form.pipelines.iter_mut().enumerate() {
+        for (i, pipeline) in form.pipelines.iter_mut().enumerate() {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.label("Name:");
-                    ui.add(TextEdit::singleline(name).desired_width(60.0));
+                    ui.add(TextEdit::singleline(&mut pipeline.name).desired_width(60.0));
 
                     // Framer 选择
-                    let fsel = match fc {
+                    let fsel = match &pipeline.framer {
                         FramerChoice::Line => "Line".to_string(),
                         FramerChoice::Fixed(n) => format!("Fixed({})", n),
+                        FramerChoice::MixedTextPlot => "MixedTextPlot".to_string(),
                     };
                     ComboBox::from_id_salt(format!("f{}", i))
                         .selected_text(fsel)
                         .show_ui(ui, |ui| {
                             if ui.selectable_label(false, "Line").clicked() {
-                                *fc = FramerChoice::Line;
+                                pipeline.framer = FramerChoice::Line;
                             }
                             if ui.selectable_label(false, "Fixed").clicked() {
-                                *fc = FramerChoice::Fixed(8);
+                                pipeline.framer = FramerChoice::Fixed(8);
+                            }
+                            if ui.selectable_label(false, "MixedTextPlot").clicked() {
+                                pipeline.framer = FramerChoice::MixedTextPlot;
+                                pipeline.decoder = DecoderChoice::MixedTextPlot;
                             }
                         });
-                    if let FramerChoice::Fixed(n) = fc {
+                    if let FramerChoice::Fixed(n) = &mut pipeline.framer {
                         ui.add(DragValue::new(n).range(1..=65536));
                     }
 
                     // Decoder 选择
                     ComboBox::from_id_salt(format!("d{}", i))
-                        .selected_text(match dc {
+                        .selected_text(match pipeline.decoder {
                             DecoderChoice::Text => "Text",
                             DecoderChoice::Hex => "Hex",
                             DecoderChoice::Plot => "Plot",
+                            DecoderChoice::MixedTextPlot => "MixedTextPlot",
                         })
                         .show_ui(ui, |ui| {
                             if ui.selectable_label(false, "Text").clicked() {
-                                *dc = DecoderChoice::Text;
+                                pipeline.decoder = DecoderChoice::Text;
                             }
                             if ui.selectable_label(false, "Hex").clicked() {
-                                *dc = DecoderChoice::Hex;
+                                pipeline.decoder = DecoderChoice::Hex;
                             }
                             if ui.selectable_label(false, "Plot").clicked() {
-                                *dc = DecoderChoice::Plot;
+                                if matches!(pipeline.framer, FramerChoice::Line) {
+                                    pipeline.framer = FramerChoice::Fixed(256);
+                                }
+                                pipeline.decoder = DecoderChoice::Plot;
+                            }
+                            if ui.selectable_label(false, "MixedTextPlot").clicked() {
+                                pipeline.framer = FramerChoice::MixedTextPlot;
+                                pipeline.decoder = DecoderChoice::MixedTextPlot;
                             }
                         });
 
@@ -267,6 +454,88 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
                         remove = Some(i);
                     }
                 });
+
+                if matches!(pipeline.decoder, DecoderChoice::Plot) {
+                    ui.horizontal(|ui| {
+                        ui.label("Plot channels:");
+                        ui.add(DragValue::new(&mut pipeline.plot_channels).range(1..=32));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Plot format:");
+                        ComboBox::from_id_salt(format!("plot_format{}", i))
+                            .selected_text(match pipeline.plot_format {
+                                PlotFormat::Interleaved => "Interleaved",
+                                PlotFormat::Block => "Block",
+                                PlotFormat::XY => "XY",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut pipeline.plot_format,
+                                    PlotFormat::Interleaved,
+                                    "Interleaved",
+                                );
+                                ui.selectable_value(
+                                    &mut pipeline.plot_format,
+                                    PlotFormat::Block,
+                                    "Block",
+                                );
+                                ui.selectable_value(
+                                    &mut pipeline.plot_format,
+                                    PlotFormat::XY,
+                                    "XY",
+                                );
+                            });
+                    });
+
+                    if matches!(pipeline.plot_format, PlotFormat::XY) {
+                        pipeline.plot_channels = 2;
+                    }
+
+                    match &pipeline.framer {
+                        FramerChoice::Line => {
+                            let message = "Plot decoder requires Fixed framer for raw binary samples";
+                            ui.colored_label(egui::Color32::RED, message);
+                            validation_errors
+                                .push(format!("pipeline '{}': {message}", pipeline.name));
+                        }
+                        FramerChoice::Fixed(n)
+                            if *n % (pipeline.plot_channels.max(1) * 4) != 0 =>
+                        {
+                            let message = format!(
+                                "Plot decoder currently expects interleaved f32 data, so frame length must be a multiple of {} bytes",
+                                pipeline.plot_channels.max(1) * 4
+                            );
+                            ui.colored_label(egui::Color32::RED, &message);
+                            validation_errors
+                                .push(format!("pipeline '{}': {message}", pipeline.name));
+                        }
+                        FramerChoice::MixedTextPlot => {
+                            let message = "Raw Plot decoder cannot be used with MixedTextPlot framer";
+                            ui.colored_label(egui::Color32::RED, message);
+                            validation_errors
+                                .push(format!("pipeline '{}': {message}", pipeline.name));
+                        }
+                        FramerChoice::Fixed(_) => {}
+                    }
+
+                    if matches!(pipeline.plot_format, PlotFormat::XY) && pipeline.plot_channels != 2
+                    {
+                        let message = "XY plot requires exactly 2 channels";
+                        ui.colored_label(egui::Color32::RED, message);
+                        validation_errors.push(format!(
+                            "pipeline '{}': {message}",
+                            pipeline.name
+                        ));
+                    }
+                }
+
+                if matches!(pipeline.decoder, DecoderChoice::MixedTextPlot)
+                    && !matches!(pipeline.framer, FramerChoice::MixedTextPlot)
+                {
+                    let message = "MixedTextPlot decoder requires MixedTextPlot framer";
+                    ui.colored_label(egui::Color32::RED, message);
+                    validation_errors.push(format!("pipeline '{}': {message}", pipeline.name));
+                }
             });
         }
 
@@ -275,11 +544,13 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
         }
 
         if ui.button("+ Add Pipeline").clicked() {
-            form.pipelines.push((
-                format!("p{}", form.pipelines.len()),
-                FramerChoice::Line,
-                DecoderChoice::Text,
-            ));
+            form.pipelines.push(PipelineForm {
+                name: format!("p{}", form.pipelines.len()),
+                framer: FramerChoice::Line,
+                decoder: DecoderChoice::Text,
+                plot_channels: 1,
+                plot_format: PlotFormat::Interleaved,
+            });
         }
 
         ui.separator();
@@ -290,8 +561,13 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
         ui.checkbox(&mut form.auto_reconnect, "Auto reconnect");
 
         ui.separator();
+        for error in &validation_errors {
+            ui.colored_label(egui::Color32::RED, error);
+        }
         if ui.button(submit_label).clicked() {
-            result = Some(form.to_session_config());
+            if validation_errors.is_empty() {
+                result = Some(form.to_session_config());
+            }
         }
     });
 

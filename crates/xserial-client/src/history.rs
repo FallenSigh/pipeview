@@ -31,6 +31,12 @@ impl<T> RingBuffer<T> {
     pub fn clear(&mut self) {
         self.buf.clear();
     }
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit;
+        while self.buf.len() > self.limit {
+            self.buf.pop_front();
+        }
+    }
     pub fn drain_recent(&self, count: usize) -> Vec<T>
     where
         T: Clone,

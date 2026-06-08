@@ -1,7 +1,8 @@
 use std::sync::mpsc;
+use std::time::Duration;
 
-use crate::buffers::{HexBuffer, TextBuffer};
-use crate::panels::{config, console, hex_view, sidebar};
+use crate::buffers::{HexBuffer, PlotBuffer, TextBuffer};
+use crate::panels::{config, console, hex_view, plot_view, sidebar};
 use egui::{Color32, Layout, Panel, Pos2, Rect, TextEdit, UiBuilder};
 use xserial_client::SessionManager;
 use xserial_client::config::SessionConfig;
@@ -31,6 +32,7 @@ impl ConnectionStatus {
 pub enum View {
     Text,
     Hex,
+    Plot,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -52,6 +54,8 @@ pub struct SessionTab {
     pub status: ConnectionStatus,
     pub console: TextBuffer,
     pub hex: HexBuffer,
+    pub plot: PlotBuffer,
+    pub plot_view: plot_view::PlotViewState,
     pub view: View,
     pub auto_reconnect: bool,
     pub send_input: String,
@@ -131,8 +135,9 @@ impl XserialApp {
             let history_limit = session_config.history_limit;
             tab.session_config = session_config.clone();
             tab.auto_reconnect = session_config.auto_reconnect;
-            tab.console = TextBuffer::new(history_limit);
-            tab.hex = HexBuffer::new(history_limit);
+            tab.console.set_limit(history_limit);
+            tab.hex.set_limit(history_limit);
+            tab.plot.set_limit(history_limit);
             tab.status = ConnectionStatus::Connecting;
             tab.send_status = Some(String::from("Session reconfigured"));
         }
@@ -173,12 +178,22 @@ impl XserialApp {
                         match &entry.data {
                             DecodedData::Text(_) => tab.console.push(&entry),
                             DecodedData::Hex(_) => tab.hex.push(&entry),
-                            DecodedData::Binary(_) | DecodedData::Plot(_) => {}
+                            DecodedData::Plot(_) => tab.plot.push(&entry),
+                            DecodedData::Binary(_) => {}
                         }
                     }
                 }
             }
         }
+    }
+
+    fn wants_live_plot_repaint(&self) -> bool {
+        self.tabs
+            .get(self.active)
+            .map(|tab| {
+                matches!(tab.view, View::Plot) && matches!(tab.status, ConnectionStatus::Connected)
+            })
+            .unwrap_or(false)
     }
 
     fn render_config_window(&mut self, ctx: &egui::Context) {
@@ -215,6 +230,8 @@ impl XserialApp {
                     status: ConnectionStatus::Connecting,
                     console: TextBuffer::new(history_limit),
                     hex: HexBuffer::new(history_limit),
+                    plot: PlotBuffer::new(history_limit),
+                    plot_view: plot_view::PlotViewState::default(),
                     view: View::Text,
                     auto_reconnect,
                     send_input: String::new(),
@@ -296,6 +313,12 @@ impl XserialApp {
                     if ui.selectable_label(tab.view == View::Hex, "Hex").clicked() {
                         tab.view = View::Hex;
                     }
+                    if ui
+                        .selectable_label(tab.view == View::Plot, "Plot")
+                        .clicked()
+                    {
+                        tab.view = View::Plot;
+                    }
                 });
 
                 if render_session_controls(ui, &manager, tab) {
@@ -331,6 +354,7 @@ impl XserialApp {
                     |ui| match tab.view {
                         View::Text => console::render(ui, &tab.console, *display),
                         View::Hex => hex_view::render(ui, &tab.hex, *display),
+                        View::Plot => plot_view::render(ui, &tab.plot, tab.id, &mut tab.plot_view),
                     },
                 );
 
@@ -354,6 +378,9 @@ impl eframe::App for XserialApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
+        if self.wants_live_plot_repaint() {
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        }
         self.render_config_window(ui.ctx());
         self.render_sidebar(ui);
         self.render_main_panel(ui);
@@ -402,6 +429,13 @@ fn render_session_controls(
 
         if ui.button("Configure").clicked() {
             configure_clicked = true;
+        }
+
+        if ui.button("Clear").clicked() {
+            tab.console.clear();
+            tab.hex.clear();
+            tab.plot.clear();
+            tab.send_status = Some(String::from("Cleared"));
         }
 
         let response = ui.checkbox(&mut tab.auto_reconnect, "Auto reconnect");

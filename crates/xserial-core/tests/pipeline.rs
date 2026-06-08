@@ -6,16 +6,22 @@ use tokio::time::timeout;
 
 use xserial_core::frame::{
     Endian, Framer,
+    cobs::cobs_encode as raw_cobs_encode,
     cobs::CobsFramer,
     fixed::FixedLengthFramer,
     length::{LengthConfig, LengthPrefixedFramer},
     line::{LineConfig, LineFramer},
+    mixed::{MixedTextPlotConfig as MixedFramerConfig, MixedTextPlotFramer},
 };
 use xserial_core::protocol::{
     DecodedData, ProtocolDecoder,
     hex::{HexConfig, HexDecoder},
+    mixed::{MIXED_PLOT_ESCAPE, MIXED_PLOT_MARKER, MixedTextPlotConfig, MixedTextPlotDecoder},
     plot::{PlotConfig, PlotDecoder, PlotFormat, SampleType},
     text::{TextDecoder, TextEncoding},
+};
+use xserial_core::transport::serial::{
+    SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits,
 };
 use xserial_core::transport::{Connection, TransportConfig, TransportType};
 
@@ -253,6 +259,58 @@ async fn tcp_fixed_plot_f32() {
         }
         other => panic!("expected Plot, got {:?}", other),
     }
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn tcp_mixed_text_and_plot_single_stream() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let payload = [
+            0x00, 0x00, 0x80, 0x3f, // 1.0
+            0x00, 0x00, 0x00, 0x40, // 2.0
+        ];
+        let packet = MixedTextPlotDecoder::build_plot_packet(
+            SampleType::F32,
+            Endian::Little,
+            1,
+            PlotFormat::Interleaved,
+            2,
+            &payload,
+        );
+        let mut mixed = b"status ok\n".to_vec();
+        mixed.push(MIXED_PLOT_ESCAPE);
+        mixed.push(MIXED_PLOT_MARKER);
+        mixed.extend_from_slice(&raw_cobs_encode(&packet));
+        mixed.push(0x00);
+        mixed.extend_from_slice(b"done\n");
+        stream.write_all(&mixed).await.unwrap();
+    });
+
+    let mut conn = Connection::new(TransportConfig::Tcp { addr });
+    conn.connect().await.unwrap();
+
+    let mut framer = MixedTextPlotFramer::new(MixedFramerConfig::default());
+    let frames = read_to_framer(&mut conn, &mut framer).await;
+    conn.disconnect().await.unwrap();
+
+    let decoder = MixedTextPlotDecoder::new(MixedTextPlotConfig::default());
+    let results: Vec<DecodedData> = frames
+        .iter()
+        .filter_map(|f| decoder.decode(f))
+        .collect();
+
+    assert_eq!(results.len(), 3);
+    assert!(matches!(&results[0], DecodedData::Text(s) if s == "status ok"));
+    match &results[1] {
+        DecodedData::Plot(frame) => assert_eq!(frame.channels[0], vec![1.0, 2.0]),
+        other => panic!("expected Plot, got {other:?}"),
+    }
+    assert!(matches!(&results[2], DecodedData::Text(s) if s == "done"));
+
     server.await.unwrap();
 }
 
@@ -629,6 +687,10 @@ async fn connection_transport_type_dispatch() {
     let serial = Connection::new(TransportConfig::Serial {
         port: "COM1".into(),
         baud_rate: 115200,
+        data_bits: SerialDataBits::Eight,
+        parity: SerialParity::None,
+        stop_bits: SerialStopBits::One,
+        flow_control: SerialFlowControl::None,
     });
     let tcp = Connection::new(TransportConfig::Tcp {
         addr: "127.0.0.1:8080".into(),

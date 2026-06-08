@@ -87,7 +87,39 @@ impl Framer for CobsFramer {
 ///
 /// Returns `None` if the encoded data is invalid (e.g. an overhead byte
 /// points past the end of the buffer).
-fn cobs_decode(encoded: &[u8]) -> Option<Vec<u8>> {
+pub fn cobs_encode(payload: &[u8]) -> Vec<u8> {
+    if payload.is_empty() {
+        return vec![0x01];
+    }
+
+    let mut out = Vec::with_capacity(payload.len() + (payload.len() / 254) + 1);
+    let mut code_index = 0usize;
+    let mut code = 1u8;
+    out.push(0);
+
+    for &byte in payload {
+        if byte == 0 {
+            out[code_index] = code;
+            code_index = out.len();
+            out.push(0);
+            code = 1;
+        } else {
+            out.push(byte);
+            code = code.saturating_add(1);
+            if code == 0xFF {
+                out[code_index] = code;
+                code_index = out.len();
+                out.push(0);
+                code = 1;
+            }
+        }
+    }
+
+    out[code_index] = code;
+    out
+}
+
+pub fn cobs_decode(encoded: &[u8]) -> Option<Vec<u8>> {
     if encoded.is_empty() {
         return Some(Vec::new());
     }
@@ -126,6 +158,14 @@ fn cobs_decode(encoded: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cobs_roundtrip_with_zeros() {
+        let payload = [0x11, 0x00, 0x22, 0x33, 0x00, 0x44];
+        let encoded = cobs_encode(&payload);
+        let decoded = cobs_decode(&encoded).unwrap();
+        assert_eq!(decoded, payload);
+    }
 
     // ── cobs_decode unit tests ──────────────────────────────────────
 
