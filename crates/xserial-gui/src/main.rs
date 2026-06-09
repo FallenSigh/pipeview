@@ -1,4 +1,5 @@
 mod app;
+mod app_state;
 mod buffers;
 mod panels;
 mod ui_fonts;

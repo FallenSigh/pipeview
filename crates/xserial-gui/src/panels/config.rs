@@ -1,14 +1,12 @@
 use egui::{ComboBox, DragValue, ScrollArea, TextEdit, Ui};
 use xserial_client::config::{DecoderConfig, FramerConfig, PipelineConfig, SessionConfig};
 use xserial_core::protocol::Endian;
-use xserial_core::protocol::plot::PlotFormat;
+use xserial_core::protocol::plot::{PlotFormat, SampleType};
 use xserial_core::protocol::text::TextEncoding;
 use xserial_core::transport::TransportConfig;
 use xserial_core::transport::serial::{
     SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits,
 };
-
-// ── 表单数据结构（简化版，方便 UI 渲染）────────────────────────────
 
 #[derive(Clone)]
 pub struct ConfigForm {
@@ -33,27 +31,44 @@ pub struct PipelineForm {
     pub framer: FramerChoice,
     pub decoder: DecoderChoice,
     pub text_encoding: TextEncoding,
+    pub line_strip_cr: bool,
+    pub line_max_line_len: usize,
+    pub fixed_frame_len: usize,
+    pub length_len_bytes: usize,
+    pub length_endian: Endian,
+    pub length_includes_self: bool,
+    pub length_max_payload: usize,
+    pub cobs_max_frame: usize,
+    pub mixed_strip_cr: bool,
+    pub mixed_max_line_len: usize,
+    pub mixed_max_plot_frame: usize,
+    pub hex_uppercase: bool,
+    pub hex_separator: String,
+    pub hex_bytes_per_group: usize,
     pub hex_endian: Endian,
+    pub plot_sample_type: SampleType,
     pub plot_channels: usize,
     pub plot_endian: Endian,
     pub plot_format: PlotFormat,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TransportChoice {
     Serial,
     Tcp,
     Udp,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FramerChoice {
     Line,
-    Fixed(usize),
+    Fixed,
+    Length,
+    Cobs,
     MixedTextPlot,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DecoderChoice {
     Text,
     Hex,
@@ -61,30 +76,51 @@ pub enum DecoderChoice {
     MixedTextPlot,
 }
 
+impl PipelineForm {
+    fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            framer: FramerChoice::Line,
+            decoder: DecoderChoice::Text,
+            text_encoding: TextEncoding::Utf8,
+            line_strip_cr: true,
+            line_max_line_len: 1_048_576,
+            fixed_frame_len: 256,
+            length_len_bytes: 2,
+            length_endian: Endian::Big,
+            length_includes_self: false,
+            length_max_payload: 1_048_576,
+            cobs_max_frame: 1_048_576,
+            mixed_strip_cr: true,
+            mixed_max_line_len: 1_048_576,
+            mixed_max_plot_frame: 1_048_576,
+            hex_uppercase: false,
+            hex_separator: String::from(" "),
+            hex_bytes_per_group: 1,
+            hex_endian: Endian::Big,
+            plot_sample_type: SampleType::F32,
+            plot_channels: 1,
+            plot_endian: Endian::Little,
+            plot_format: PlotFormat::Interleaved,
+        }
+    }
+}
+
 impl Default for ConfigForm {
     fn default() -> Self {
         Self {
             transport: TransportChoice::Tcp,
-            port: "/dev/ttyUSB0".into(),
+            port: String::from("/dev/ttyUSB0"),
             baud: 115200,
             serial_data_bits: SerialDataBits::Eight,
             serial_parity: SerialParity::None,
             serial_stop_bits: SerialStopBits::One,
             serial_flow_control: SerialFlowControl::None,
-            addr: "127.0.0.1:8080".into(),
-            udp_bind: "0.0.0.0:9000".into(),
+            addr: String::from("127.0.0.1:8080"),
+            udp_bind: String::from("0.0.0.0:9000"),
             udp_remote: String::new(),
-            pipelines: vec![PipelineForm {
-                name: "text".into(),
-                framer: FramerChoice::Line,
-                decoder: DecoderChoice::Text,
-                text_encoding: TextEncoding::Utf8,
-                hex_endian: Endian::Big,
-                plot_channels: 1,
-                plot_endian: Endian::Little,
-                plot_format: PlotFormat::Interleaved,
-            }],
-            history: 10000,
+            pipelines: vec![PipelineForm::new("text")],
+            history: 10_000,
             auto_reconnect: false,
         }
     }
@@ -137,60 +173,13 @@ impl ConfigForm {
             pipelines: config
                 .pipelines
                 .iter()
-                .map(|pipeline| {
-                    let framer = match &pipeline.framer {
-                        FramerConfig::Line { .. } => FramerChoice::Line,
-                        FramerConfig::Fixed { frame_len } => FramerChoice::Fixed(*frame_len),
-                        FramerConfig::MixedTextPlot { .. } => FramerChoice::MixedTextPlot,
-                        FramerConfig::Length { .. } | FramerConfig::Cobs { .. } => {
-                            FramerChoice::Line
-                        }
-                    };
-                    let decoder = match &pipeline.decoder {
-                        DecoderConfig::Text { .. } => DecoderChoice::Text,
-                        DecoderConfig::Hex { .. } => DecoderChoice::Hex,
-                        DecoderConfig::Plot { .. } => DecoderChoice::Plot,
-                        DecoderConfig::MixedTextPlot { .. } => DecoderChoice::MixedTextPlot,
-                    };
-                    let plot_channels = match &pipeline.decoder {
-                        DecoderConfig::Plot { channels, .. } => *channels,
-                        _ => 1,
-                    };
-                    let hex_endian = match &pipeline.decoder {
-                        DecoderConfig::Hex { endian, .. } => *endian,
-                        _ => Endian::Big,
-                    };
-                    let plot_endian = match &pipeline.decoder {
-                        DecoderConfig::Plot { endian, .. } => *endian,
-                        _ => Endian::Little,
-                    };
-                    let text_encoding = match &pipeline.decoder {
-                        DecoderConfig::Text { encoding } => *encoding,
-                        DecoderConfig::MixedTextPlot { encoding } => *encoding,
-                        _ => TextEncoding::Utf8,
-                    };
-                    let plot_format = match &pipeline.decoder {
-                        DecoderConfig::Plot { format, .. } => *format,
-                        _ => PlotFormat::Interleaved,
-                    };
-                    PipelineForm {
-                        name: pipeline.name.clone(),
-                        framer,
-                        decoder,
-                        text_encoding,
-                        hex_endian,
-                        plot_channels,
-                        plot_endian,
-                        plot_format,
-                    }
-                })
+                .map(PipelineForm::from_pipeline_config)
                 .collect(),
             history: config.history_limit,
             auto_reconnect: config.auto_reconnect,
         }
     }
 
-    // 把表单数据转换成 xserial-client 的 SessionConfig
     pub fn to_session_config(&self) -> SessionConfig {
         SessionConfig {
             transport: match self.transport {
@@ -207,7 +196,7 @@ impl ConfigForm {
                 },
                 TransportChoice::Udp => TransportConfig::Udp {
                     bind_addr: self.udp_bind.clone(),
-                    remote_addr: if self.udp_remote.is_empty() {
+                    remote_addr: if self.udp_remote.trim().is_empty() {
                         None
                     } else {
                         Some(self.udp_remote.clone())
@@ -217,41 +206,7 @@ impl ConfigForm {
             pipelines: self
                 .pipelines
                 .iter()
-                .map(|pipeline| PipelineConfig {
-                    name: pipeline.name.clone(),
-                    framer: match &pipeline.framer {
-                        FramerChoice::Line => FramerConfig::Line {
-                            strip_cr: true,
-                            max_line_len: 1_048_576,
-                        },
-                        FramerChoice::Fixed(n) => FramerConfig::Fixed { frame_len: *n },
-                        FramerChoice::MixedTextPlot => FramerConfig::MixedTextPlot {
-                            strip_cr: true,
-                            max_line_len: 1_048_576,
-                            max_plot_frame: 1_048_576,
-                        },
-                    },
-                    decoder: match &pipeline.decoder {
-                        DecoderChoice::Text => DecoderConfig::Text {
-                            encoding: pipeline.text_encoding,
-                        },
-                        DecoderChoice::Hex => DecoderConfig::Hex {
-                            uppercase: false,
-                            separator: " ".into(),
-                            bytes_per_group: 1,
-                            endian: pipeline.hex_endian,
-                        },
-                        DecoderChoice::Plot => DecoderConfig::Plot {
-                            sample_type: xserial_core::protocol::plot::SampleType::F32,
-                            endian: pipeline.plot_endian,
-                            channels: pipeline.plot_channels.max(1),
-                            format: pipeline.plot_format,
-                        },
-                        DecoderChoice::MixedTextPlot => DecoderConfig::MixedTextPlot {
-                            encoding: pipeline.text_encoding,
-                        },
-                    },
-                })
+                .map(PipelineForm::to_pipeline_config)
                 .collect(),
             history_limit: self.history,
             auto_reconnect: self.auto_reconnect,
@@ -259,7 +214,138 @@ impl ConfigForm {
     }
 }
 
-// ── 渲染函数 ──────────────────────────────────────────────────────
+impl PipelineForm {
+    fn from_pipeline_config(config: &PipelineConfig) -> Self {
+        let mut form = Self::new(config.name.clone());
+
+        match &config.framer {
+            FramerConfig::Line {
+                strip_cr,
+                max_line_len,
+            } => {
+                form.framer = FramerChoice::Line;
+                form.line_strip_cr = *strip_cr;
+                form.line_max_line_len = *max_line_len;
+            }
+            FramerConfig::Fixed { frame_len } => {
+                form.framer = FramerChoice::Fixed;
+                form.fixed_frame_len = *frame_len;
+            }
+            FramerConfig::Length {
+                len_bytes,
+                endian,
+                length_includes_self,
+                max_payload,
+            } => {
+                form.framer = FramerChoice::Length;
+                form.length_len_bytes = *len_bytes;
+                form.length_endian = *endian;
+                form.length_includes_self = *length_includes_self;
+                form.length_max_payload = *max_payload;
+            }
+            FramerConfig::Cobs { max_frame } => {
+                form.framer = FramerChoice::Cobs;
+                form.cobs_max_frame = *max_frame;
+            }
+            FramerConfig::MixedTextPlot {
+                strip_cr,
+                max_line_len,
+                max_plot_frame,
+            } => {
+                form.framer = FramerChoice::MixedTextPlot;
+                form.mixed_strip_cr = *strip_cr;
+                form.mixed_max_line_len = *max_line_len;
+                form.mixed_max_plot_frame = *max_plot_frame;
+            }
+        }
+
+        match &config.decoder {
+            DecoderConfig::Text { encoding } => {
+                form.decoder = DecoderChoice::Text;
+                form.text_encoding = *encoding;
+            }
+            DecoderConfig::Hex {
+                uppercase,
+                separator,
+                bytes_per_group,
+                endian,
+            } => {
+                form.decoder = DecoderChoice::Hex;
+                form.hex_uppercase = *uppercase;
+                form.hex_separator = separator.clone();
+                form.hex_bytes_per_group = *bytes_per_group;
+                form.hex_endian = *endian;
+            }
+            DecoderConfig::Plot {
+                sample_type,
+                endian,
+                channels,
+                format,
+            } => {
+                form.decoder = DecoderChoice::Plot;
+                form.plot_sample_type = *sample_type;
+                form.plot_endian = *endian;
+                form.plot_channels = *channels;
+                form.plot_format = *format;
+            }
+            DecoderConfig::MixedTextPlot { encoding } => {
+                form.decoder = DecoderChoice::MixedTextPlot;
+                form.text_encoding = *encoding;
+            }
+        }
+
+        form
+    }
+
+    fn to_pipeline_config(&self) -> PipelineConfig {
+        PipelineConfig {
+            name: self.name.clone(),
+            framer: match self.framer {
+                FramerChoice::Line => FramerConfig::Line {
+                    strip_cr: self.line_strip_cr,
+                    max_line_len: self.line_max_line_len,
+                },
+                FramerChoice::Fixed => FramerConfig::Fixed {
+                    frame_len: self.fixed_frame_len,
+                },
+                FramerChoice::Length => FramerConfig::Length {
+                    len_bytes: self.length_len_bytes,
+                    endian: self.length_endian,
+                    length_includes_self: self.length_includes_self,
+                    max_payload: self.length_max_payload,
+                },
+                FramerChoice::Cobs => FramerConfig::Cobs {
+                    max_frame: self.cobs_max_frame,
+                },
+                FramerChoice::MixedTextPlot => FramerConfig::MixedTextPlot {
+                    strip_cr: self.mixed_strip_cr,
+                    max_line_len: self.mixed_max_line_len,
+                    max_plot_frame: self.mixed_max_plot_frame,
+                },
+            },
+            decoder: match self.decoder {
+                DecoderChoice::Text => DecoderConfig::Text {
+                    encoding: self.text_encoding,
+                },
+                DecoderChoice::Hex => DecoderConfig::Hex {
+                    uppercase: self.hex_uppercase,
+                    separator: self.hex_separator.clone(),
+                    bytes_per_group: self.hex_bytes_per_group.max(1),
+                    endian: self.hex_endian,
+                },
+                DecoderChoice::Plot => DecoderConfig::Plot {
+                    sample_type: self.plot_sample_type,
+                    endian: self.plot_endian,
+                    channels: self.plot_channels.max(1),
+                    format: self.plot_format,
+                },
+                DecoderChoice::MixedTextPlot => DecoderConfig::MixedTextPlot {
+                    encoding: self.text_encoding,
+                },
+            },
+        }
+    }
+}
 
 pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<SessionConfig> {
     let mut result = None;
@@ -267,343 +353,28 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
 
     ScrollArea::vertical().show(ui, |ui| {
         ui.heading("Transport");
-
-        // 传输类型下拉
-        ComboBox::from_label("Type")
-            .selected_text(match form.transport {
-                TransportChoice::Serial => "Serial",
-                TransportChoice::Tcp => "TCP",
-                TransportChoice::Udp => "UDP",
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut form.transport, TransportChoice::Serial, "Serial");
-                ui.selectable_value(&mut form.transport, TransportChoice::Tcp, "TCP");
-                ui.selectable_value(&mut form.transport, TransportChoice::Udp, "UDP");
-            });
-
-        // 根据类型显示不同字段
-        match form.transport {
-            TransportChoice::Serial => {
-                ui.horizontal(|ui| {
-                    ui.label("Port:");
-                    ui.text_edit_singleline(&mut form.port);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Baud:");
-                    ui.add(DragValue::new(&mut form.baud).range(300..=12_000_000));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Data bits:");
-                    ComboBox::from_id_salt("serial_data_bits")
-                        .selected_text(match form.serial_data_bits {
-                            SerialDataBits::Five => "5",
-                            SerialDataBits::Six => "6",
-                            SerialDataBits::Seven => "7",
-                            SerialDataBits::Eight => "8",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut form.serial_data_bits,
-                                SerialDataBits::Five,
-                                "5",
-                            );
-                            ui.selectable_value(
-                                &mut form.serial_data_bits,
-                                SerialDataBits::Six,
-                                "6",
-                            );
-                            ui.selectable_value(
-                                &mut form.serial_data_bits,
-                                SerialDataBits::Seven,
-                                "7",
-                            );
-                            ui.selectable_value(
-                                &mut form.serial_data_bits,
-                                SerialDataBits::Eight,
-                                "8",
-                            );
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Parity:");
-                    ComboBox::from_id_salt("serial_parity")
-                        .selected_text(match form.serial_parity {
-                            SerialParity::None => "None",
-                            SerialParity::Odd => "Odd",
-                            SerialParity::Even => "Even",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut form.serial_parity,
-                                SerialParity::None,
-                                "None",
-                            );
-                            ui.selectable_value(&mut form.serial_parity, SerialParity::Odd, "Odd");
-                            ui.selectable_value(
-                                &mut form.serial_parity,
-                                SerialParity::Even,
-                                "Even",
-                            );
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Stop bits:");
-                    ComboBox::from_id_salt("serial_stop_bits")
-                        .selected_text(match form.serial_stop_bits {
-                            SerialStopBits::One => "1",
-                            SerialStopBits::Two => "2",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut form.serial_stop_bits,
-                                SerialStopBits::One,
-                                "1",
-                            );
-                            ui.selectable_value(
-                                &mut form.serial_stop_bits,
-                                SerialStopBits::Two,
-                                "2",
-                            );
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Flow:");
-                    ComboBox::from_id_salt("serial_flow_control")
-                        .selected_text(match form.serial_flow_control {
-                            SerialFlowControl::None => "None",
-                            SerialFlowControl::Software => "Software",
-                            SerialFlowControl::Hardware => "Hardware",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut form.serial_flow_control,
-                                SerialFlowControl::None,
-                                "None",
-                            );
-                            ui.selectable_value(
-                                &mut form.serial_flow_control,
-                                SerialFlowControl::Software,
-                                "Software",
-                            );
-                            ui.selectable_value(
-                                &mut form.serial_flow_control,
-                                SerialFlowControl::Hardware,
-                                "Hardware",
-                            );
-                        });
-                });
-            }
-            TransportChoice::Tcp => {
-                ui.horizontal(|ui| {
-                    ui.label("Addr:");
-                    ui.text_edit_singleline(&mut form.addr);
-                });
-            }
-            TransportChoice::Udp => {
-                ui.horizontal(|ui| {
-                    ui.label("Bind:");
-                    ui.text_edit_singleline(&mut form.udp_bind);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Remote:");
-                    ui.text_edit_singleline(&mut form.udp_remote);
-                });
-            }
-        }
+        render_transport_section(ui, form);
 
         ui.separator();
         ui.heading("Pipelines");
 
         let mut remove = None;
-
-        // 管道列表
-        for (i, pipeline) in form.pipelines.iter_mut().enumerate() {
+        for (index, pipeline) in form.pipelines.iter_mut().enumerate() {
             ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    ui.add(TextEdit::singleline(&mut pipeline.name).desired_width(60.0));
-
-                    // Framer 选择
-                    let fsel = match &pipeline.framer {
-                        FramerChoice::Line => "Line".to_string(),
-                        FramerChoice::Fixed(n) => format!("Fixed({})", n),
-                        FramerChoice::MixedTextPlot => "MixedTextPlot".to_string(),
-                    };
-                    ComboBox::from_id_salt(format!("f{}", i))
-                        .selected_text(fsel)
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_label(false, "Line").clicked() {
-                                pipeline.framer = FramerChoice::Line;
-                            }
-                            if ui.selectable_label(false, "Fixed").clicked() {
-                                pipeline.framer = FramerChoice::Fixed(8);
-                            }
-                            if ui.selectable_label(false, "MixedTextPlot").clicked() {
-                                pipeline.framer = FramerChoice::MixedTextPlot;
-                                pipeline.decoder = DecoderChoice::MixedTextPlot;
-                            }
-                        });
-                    if let FramerChoice::Fixed(n) = &mut pipeline.framer {
-                        ui.add(DragValue::new(n).range(1..=65536));
-                    }
-
-                    // Decoder 选择
-                    ComboBox::from_id_salt(format!("d{}", i))
-                        .selected_text(match pipeline.decoder {
-                            DecoderChoice::Text => "Text",
-                            DecoderChoice::Hex => "Hex",
-                            DecoderChoice::Plot => "Plot",
-                            DecoderChoice::MixedTextPlot => "MixedTextPlot",
-                        })
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_label(false, "Text").clicked() {
-                                pipeline.decoder = DecoderChoice::Text;
-                            }
-                            if ui.selectable_label(false, "Hex").clicked() {
-                                pipeline.decoder = DecoderChoice::Hex;
-                            }
-                            if ui.selectable_label(false, "Plot").clicked() {
-                                if matches!(pipeline.framer, FramerChoice::Line) {
-                                    pipeline.framer = FramerChoice::Fixed(256);
-                                }
-                                pipeline.decoder = DecoderChoice::Plot;
-                            }
-                            if ui.selectable_label(false, "MixedTextPlot").clicked() {
-                                pipeline.framer = FramerChoice::MixedTextPlot;
-                                pipeline.decoder = DecoderChoice::MixedTextPlot;
-                            }
-                        });
-
-                    if ui.button("✕").clicked() {
-                        remove = Some(i);
-                    }
-                });
-
-                if matches!(pipeline.decoder, DecoderChoice::Plot) {
-                    ui.horizontal(|ui| {
-                        ui.label("Plot endian:");
-                        render_endian_combo(ui, &mut pipeline.plot_endian, format!("plot_endian{}", i));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Plot channels:");
-                        ui.add(DragValue::new(&mut pipeline.plot_channels).range(1..=32));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Plot format:");
-                        ComboBox::from_id_salt(format!("plot_format{}", i))
-                            .selected_text(match pipeline.plot_format {
-                                PlotFormat::Interleaved => "Interleaved",
-                                PlotFormat::Block => "Block",
-                                PlotFormat::XY => "XY",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut pipeline.plot_format,
-                                    PlotFormat::Interleaved,
-                                    "Interleaved",
-                                );
-                                ui.selectable_value(
-                                    &mut pipeline.plot_format,
-                                    PlotFormat::Block,
-                                    "Block",
-                                );
-                                ui.selectable_value(
-                                    &mut pipeline.plot_format,
-                                    PlotFormat::XY,
-                                    "XY",
-                                );
-                            });
-                    });
-
-                    if matches!(pipeline.plot_format, PlotFormat::XY) {
-                        pipeline.plot_channels = 2;
-                    }
-
-                    match &pipeline.framer {
-                        FramerChoice::Line => {
-                            let message = "Plot decoder requires Fixed framer for raw binary samples";
-                            ui.colored_label(egui::Color32::RED, message);
-                            validation_errors
-                                .push(format!("pipeline '{}': {message}", pipeline.name));
-                        }
-                        FramerChoice::Fixed(n)
-                            if *n % (pipeline.plot_channels.max(1) * 4) != 0 =>
-                        {
-                            let message = format!(
-                                "Plot decoder currently expects interleaved f32 data, so frame length must be a multiple of {} bytes",
-                                pipeline.plot_channels.max(1) * 4
-                            );
-                            ui.colored_label(egui::Color32::RED, &message);
-                            validation_errors
-                                .push(format!("pipeline '{}': {message}", pipeline.name));
-                        }
-                        FramerChoice::MixedTextPlot => {
-                            let message = "Raw Plot decoder cannot be used with MixedTextPlot framer";
-                            ui.colored_label(egui::Color32::RED, message);
-                            validation_errors
-                                .push(format!("pipeline '{}': {message}", pipeline.name));
-                        }
-                        FramerChoice::Fixed(_) => {}
-                    }
-
-                    if matches!(pipeline.plot_format, PlotFormat::XY) && pipeline.plot_channels != 2
-                    {
-                        let message = "XY plot requires exactly 2 channels";
-                        ui.colored_label(egui::Color32::RED, message);
-                        validation_errors.push(format!(
-                            "pipeline '{}': {message}",
-                            pipeline.name
-                        ));
-                    }
-                }
-
-                if matches!(pipeline.decoder, DecoderChoice::Hex) {
-                    ui.horizontal(|ui| {
-                        ui.label("Hex endian:");
-                        render_endian_combo(ui, &mut pipeline.hex_endian, format!("hex_endian{}", i));
-                    });
-                }
-
-                if matches!(pipeline.decoder, DecoderChoice::Text) {
-                    ui.horizontal(|ui| {
-                        ui.label("Text encoding:");
-                        render_text_encoding_combo(ui, &mut pipeline.text_encoding, i);
-                    });
-                }
-
-                if matches!(pipeline.decoder, DecoderChoice::MixedTextPlot) {
-                    ui.horizontal(|ui| {
-                        ui.label("Mixed text encoding:");
-                        render_text_encoding_combo(ui, &mut pipeline.text_encoding, i);
-                    });
-                    ui.small("Plot sample type, endian, format, and channels come from the mixed packet header.");
-                }
-
-                if matches!(pipeline.decoder, DecoderChoice::MixedTextPlot)
-                    && !matches!(pipeline.framer, FramerChoice::MixedTextPlot)
-                {
-                    let message = "MixedTextPlot decoder requires MixedTextPlot framer";
-                    ui.colored_label(egui::Color32::RED, message);
-                    validation_errors.push(format!("pipeline '{}': {message}", pipeline.name));
-                }
+                render_pipeline_header(ui, pipeline, index, &mut remove);
+                render_framer_settings(ui, pipeline, index);
+                render_decoder_settings(ui, pipeline, index);
+                validate_pipeline(ui, pipeline, &mut validation_errors);
             });
         }
 
-        if let Some(i) = remove {
-            form.pipelines.remove(i);
+        if let Some(index) = remove {
+            form.pipelines.remove(index);
         }
 
         if ui.button("+ Add Pipeline").clicked() {
-            form.pipelines.push(PipelineForm {
-                name: format!("p{}", form.pipelines.len()),
-                framer: FramerChoice::Line,
-                decoder: DecoderChoice::Text,
-                text_encoding: TextEncoding::Utf8,
-                hex_endian: Endian::Big,
-                plot_channels: 1,
-                plot_endian: Endian::Little,
-                plot_format: PlotFormat::Interleaved,
-            });
+            form.pipelines
+                .push(PipelineForm::new(format!("p{}", form.pipelines.len())));
         }
 
         ui.separator();
@@ -617,18 +388,404 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
         for error in &validation_errors {
             ui.colored_label(egui::Color32::RED, error);
         }
-        if ui.button(submit_label).clicked() {
-            if validation_errors.is_empty() {
-                result = Some(form.to_session_config());
-            }
+        if ui.button(submit_label).clicked() && validation_errors.is_empty() {
+            result = Some(form.to_session_config());
         }
     });
 
     result
 }
 
-fn render_text_encoding_combo(ui: &mut Ui, encoding: &mut TextEncoding, index: usize) {
-    ComboBox::from_id_salt(format!("text_encoding{}", index))
+fn render_transport_section(ui: &mut Ui, form: &mut ConfigForm) {
+    ComboBox::from_label("Type")
+        .selected_text(match form.transport {
+            TransportChoice::Serial => "Serial",
+            TransportChoice::Tcp => "TCP",
+            TransportChoice::Udp => "UDP",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut form.transport, TransportChoice::Serial, "Serial");
+            ui.selectable_value(&mut form.transport, TransportChoice::Tcp, "TCP");
+            ui.selectable_value(&mut form.transport, TransportChoice::Udp, "UDP");
+        });
+
+    match form.transport {
+        TransportChoice::Serial => {
+            ui.horizontal(|ui| {
+                ui.label("Port:");
+                ui.text_edit_singleline(&mut form.port);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Baud:");
+                ui.add(DragValue::new(&mut form.baud).range(300..=12_000_000));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Data bits:");
+                ComboBox::from_id_salt("serial_data_bits")
+                    .selected_text(match form.serial_data_bits {
+                        SerialDataBits::Five => "5",
+                        SerialDataBits::Six => "6",
+                        SerialDataBits::Seven => "7",
+                        SerialDataBits::Eight => "8",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut form.serial_data_bits, SerialDataBits::Five, "5");
+                        ui.selectable_value(&mut form.serial_data_bits, SerialDataBits::Six, "6");
+                        ui.selectable_value(&mut form.serial_data_bits, SerialDataBits::Seven, "7");
+                        ui.selectable_value(&mut form.serial_data_bits, SerialDataBits::Eight, "8");
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Parity:");
+                ComboBox::from_id_salt("serial_parity")
+                    .selected_text(match form.serial_parity {
+                        SerialParity::None => "None",
+                        SerialParity::Odd => "Odd",
+                        SerialParity::Even => "Even",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut form.serial_parity, SerialParity::None, "None");
+                        ui.selectable_value(&mut form.serial_parity, SerialParity::Odd, "Odd");
+                        ui.selectable_value(&mut form.serial_parity, SerialParity::Even, "Even");
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Stop bits:");
+                ComboBox::from_id_salt("serial_stop_bits")
+                    .selected_text(match form.serial_stop_bits {
+                        SerialStopBits::One => "1",
+                        SerialStopBits::Two => "2",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut form.serial_stop_bits, SerialStopBits::One, "1");
+                        ui.selectable_value(&mut form.serial_stop_bits, SerialStopBits::Two, "2");
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Flow:");
+                ComboBox::from_id_salt("serial_flow_control")
+                    .selected_text(match form.serial_flow_control {
+                        SerialFlowControl::None => "None",
+                        SerialFlowControl::Software => "Software",
+                        SerialFlowControl::Hardware => "Hardware",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut form.serial_flow_control,
+                            SerialFlowControl::None,
+                            "None",
+                        );
+                        ui.selectable_value(
+                            &mut form.serial_flow_control,
+                            SerialFlowControl::Software,
+                            "Software",
+                        );
+                        ui.selectable_value(
+                            &mut form.serial_flow_control,
+                            SerialFlowControl::Hardware,
+                            "Hardware",
+                        );
+                    });
+            });
+        }
+        TransportChoice::Tcp => {
+            ui.horizontal(|ui| {
+                ui.label("Addr:");
+                ui.text_edit_singleline(&mut form.addr);
+            });
+        }
+        TransportChoice::Udp => {
+            ui.horizontal(|ui| {
+                ui.label("Bind:");
+                ui.text_edit_singleline(&mut form.udp_bind);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Remote:");
+                ui.text_edit_singleline(&mut form.udp_remote);
+            });
+        }
+    }
+}
+
+fn render_pipeline_header(
+    ui: &mut Ui,
+    pipeline: &mut PipelineForm,
+    index: usize,
+    remove: &mut Option<usize>,
+) {
+    ui.horizontal(|ui| {
+        ui.label("Name:");
+        ui.add(TextEdit::singleline(&mut pipeline.name).desired_width(90.0));
+
+        ComboBox::from_id_salt(format!("framer_{index}"))
+            .selected_text(match pipeline.framer {
+                FramerChoice::Line => "Line",
+                FramerChoice::Fixed => "Fixed",
+                FramerChoice::Length => "Length",
+                FramerChoice::Cobs => "Cobs",
+                FramerChoice::MixedTextPlot => "MixedTextPlot",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut pipeline.framer, FramerChoice::Line, "Line");
+                ui.selectable_value(&mut pipeline.framer, FramerChoice::Fixed, "Fixed");
+                ui.selectable_value(&mut pipeline.framer, FramerChoice::Length, "Length");
+                ui.selectable_value(&mut pipeline.framer, FramerChoice::Cobs, "Cobs");
+                if ui
+                    .selectable_label(
+                        matches!(pipeline.framer, FramerChoice::MixedTextPlot),
+                        "MixedTextPlot",
+                    )
+                    .clicked()
+                {
+                    pipeline.framer = FramerChoice::MixedTextPlot;
+                    pipeline.decoder = DecoderChoice::MixedTextPlot;
+                }
+            });
+
+        ComboBox::from_id_salt(format!("decoder_{index}"))
+            .selected_text(match pipeline.decoder {
+                DecoderChoice::Text => "Text",
+                DecoderChoice::Hex => "Hex",
+                DecoderChoice::Plot => "Plot",
+                DecoderChoice::MixedTextPlot => "MixedTextPlot",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut pipeline.decoder, DecoderChoice::Text, "Text");
+                ui.selectable_value(&mut pipeline.decoder, DecoderChoice::Hex, "Hex");
+                if ui
+                    .selectable_label(matches!(pipeline.decoder, DecoderChoice::Plot), "Plot")
+                    .clicked()
+                {
+                    if matches!(pipeline.framer, FramerChoice::Line) {
+                        pipeline.framer = FramerChoice::Fixed;
+                    }
+                    pipeline.decoder = DecoderChoice::Plot;
+                }
+                if ui
+                    .selectable_label(
+                        matches!(pipeline.decoder, DecoderChoice::MixedTextPlot),
+                        "MixedTextPlot",
+                    )
+                    .clicked()
+                {
+                    pipeline.framer = FramerChoice::MixedTextPlot;
+                    pipeline.decoder = DecoderChoice::MixedTextPlot;
+                }
+            });
+
+        if ui.button("Delete").clicked() {
+            *remove = Some(index);
+        }
+    });
+}
+
+fn render_framer_settings(ui: &mut Ui, pipeline: &mut PipelineForm, index: usize) {
+    ui.separator();
+    ui.label("Framer settings");
+
+    match pipeline.framer {
+        FramerChoice::Line => {
+            ui.checkbox(&mut pipeline.line_strip_cr, "Strip CR");
+            ui.horizontal(|ui| {
+                ui.label("Max line length:");
+                ui.add(DragValue::new(&mut pipeline.line_max_line_len).range(1..=16_777_216));
+            });
+        }
+        FramerChoice::Fixed => {
+            ui.horizontal(|ui| {
+                ui.label("Frame length:");
+                ui.add(DragValue::new(&mut pipeline.fixed_frame_len).range(1..=16_777_216));
+            });
+        }
+        FramerChoice::Length => {
+            ui.horizontal(|ui| {
+                ui.label("Length bytes:");
+                ComboBox::from_id_salt(format!("length_len_bytes_{index}"))
+                    .selected_text(pipeline.length_len_bytes.to_string())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut pipeline.length_len_bytes, 1, "1");
+                        ui.selectable_value(&mut pipeline.length_len_bytes, 2, "2");
+                        ui.selectable_value(&mut pipeline.length_len_bytes, 4, "4");
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Length endian:");
+                render_endian_combo(
+                    ui,
+                    &mut pipeline.length_endian,
+                    format!("length_endian_{index}"),
+                );
+            });
+            ui.checkbox(
+                &mut pipeline.length_includes_self,
+                "Length field includes header bytes",
+            );
+            ui.horizontal(|ui| {
+                ui.label("Max payload:");
+                ui.add(DragValue::new(&mut pipeline.length_max_payload).range(0..=16_777_216));
+            });
+        }
+        FramerChoice::Cobs => {
+            ui.horizontal(|ui| {
+                ui.label("Max frame:");
+                ui.add(DragValue::new(&mut pipeline.cobs_max_frame).range(1..=16_777_216));
+            });
+        }
+        FramerChoice::MixedTextPlot => {
+            ui.checkbox(&mut pipeline.mixed_strip_cr, "Strip CR");
+            ui.horizontal(|ui| {
+                ui.label("Max text line:");
+                ui.add(DragValue::new(&mut pipeline.mixed_max_line_len).range(1..=16_777_216));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Max plot frame:");
+                ui.add(DragValue::new(&mut pipeline.mixed_max_plot_frame).range(1..=16_777_216));
+            });
+        }
+    }
+}
+
+fn render_decoder_settings(ui: &mut Ui, pipeline: &mut PipelineForm, index: usize) {
+    ui.separator();
+    ui.label("Decoder settings");
+
+    match pipeline.decoder {
+        DecoderChoice::Text => {
+            ui.horizontal(|ui| {
+                ui.label("Text encoding:");
+                render_text_encoding_combo(
+                    ui,
+                    &mut pipeline.text_encoding,
+                    format!("text_encoding_{index}"),
+                );
+            });
+        }
+        DecoderChoice::Hex => {
+            ui.checkbox(&mut pipeline.hex_uppercase, "Uppercase output");
+            ui.horizontal(|ui| {
+                ui.label("Separator:");
+                ui.text_edit_singleline(&mut pipeline.hex_separator);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Bytes per group:");
+                ui.add(DragValue::new(&mut pipeline.hex_bytes_per_group).range(1..=32));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Hex endian:");
+                render_endian_combo(ui, &mut pipeline.hex_endian, format!("hex_endian_{index}"));
+            });
+        }
+        DecoderChoice::Plot => {
+            ui.horizontal(|ui| {
+                ui.label("Sample type:");
+                render_sample_type_combo(
+                    ui,
+                    &mut pipeline.plot_sample_type,
+                    format!("plot_sample_type_{index}"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Plot endian:");
+                render_endian_combo(
+                    ui,
+                    &mut pipeline.plot_endian,
+                    format!("plot_endian_{index}"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Channels:");
+                ui.add(DragValue::new(&mut pipeline.plot_channels).range(1..=64));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Plot format:");
+                render_plot_format_combo(
+                    ui,
+                    &mut pipeline.plot_format,
+                    format!("plot_format_{index}"),
+                );
+            });
+            if matches!(pipeline.plot_format, PlotFormat::XY) {
+                pipeline.plot_channels = 2;
+            }
+        }
+        DecoderChoice::MixedTextPlot => {
+            ui.horizontal(|ui| {
+                ui.label("Mixed text encoding:");
+                render_text_encoding_combo(
+                    ui,
+                    &mut pipeline.text_encoding,
+                    format!("mixed_text_encoding_{index}"),
+                );
+            });
+            ui.small(
+                "Plot sample type, endian, format, and channels come from the mixed packet header.",
+            );
+        }
+    }
+}
+
+fn validate_pipeline(ui: &mut Ui, pipeline: &PipelineForm, errors: &mut Vec<String>) {
+    let mut push_error = |message: String| {
+        ui.colored_label(egui::Color32::RED, &message);
+        errors.push(format!("pipeline '{}': {}", pipeline.name, message));
+    };
+
+    if matches!(pipeline.framer, FramerChoice::MixedTextPlot)
+        && !matches!(pipeline.decoder, DecoderChoice::MixedTextPlot)
+    {
+        push_error(String::from(
+            "MixedTextPlot framer requires MixedTextPlot decoder",
+        ));
+    }
+
+    if matches!(pipeline.decoder, DecoderChoice::MixedTextPlot)
+        && !matches!(pipeline.framer, FramerChoice::MixedTextPlot)
+    {
+        push_error(String::from(
+            "MixedTextPlot decoder requires MixedTextPlot framer",
+        ));
+    }
+
+    if matches!(pipeline.decoder, DecoderChoice::Plot) {
+        if matches!(
+            pipeline.framer,
+            FramerChoice::Line | FramerChoice::MixedTextPlot
+        ) {
+            push_error(String::from(
+                "Raw Plot decoder requires Fixed, Length, or Cobs framing",
+            ));
+        }
+
+        if matches!(pipeline.plot_format, PlotFormat::XY) && pipeline.plot_channels != 2 {
+            push_error(String::from("XY plot requires exactly 2 channels"));
+        }
+
+        if matches!(pipeline.framer, FramerChoice::Fixed) {
+            let channel_count = if matches!(pipeline.plot_format, PlotFormat::XY) {
+                2
+            } else {
+                pipeline.plot_channels.max(1)
+            };
+            let sample_bytes = pipeline.plot_sample_type.byte_size();
+            let frame_unit = channel_count.saturating_mul(sample_bytes);
+            if frame_unit == 0 || pipeline.fixed_frame_len % frame_unit != 0 {
+                push_error(format!(
+                    "Fixed frame length must be a multiple of {} bytes for the current plot layout",
+                    frame_unit
+                ));
+            }
+        }
+    }
+
+    if matches!(pipeline.framer, FramerChoice::Length)
+        && !matches!(pipeline.length_len_bytes, 1 | 2 | 4)
+    {
+        push_error(String::from("Length framer len_bytes must be 1, 2, or 4"));
+    }
+}
+
+fn render_text_encoding_combo(ui: &mut Ui, encoding: &mut TextEncoding, id: impl std::hash::Hash) {
+    ComboBox::from_id_salt(id)
         .selected_text(match encoding {
             TextEncoding::Utf8 => "UTF-8",
             TextEncoding::Latin1 => "Latin1",
@@ -651,4 +808,90 @@ fn render_endian_combo(ui: &mut Ui, endian: &mut Endian, id: impl std::hash::Has
             ui.selectable_value(endian, Endian::Little, "Little");
             ui.selectable_value(endian, Endian::Big, "Big");
         });
+}
+
+fn render_sample_type_combo(ui: &mut Ui, sample_type: &mut SampleType, id: impl std::hash::Hash) {
+    ComboBox::from_id_salt(id)
+        .selected_text(sample_type.name())
+        .show_ui(ui, |ui| {
+            for option in [
+                SampleType::I8,
+                SampleType::U8,
+                SampleType::I16,
+                SampleType::U16,
+                SampleType::I32,
+                SampleType::U32,
+                SampleType::I64,
+                SampleType::U64,
+                SampleType::F32,
+                SampleType::F64,
+            ] {
+                ui.selectable_value(sample_type, option, option.name());
+            }
+        });
+}
+
+fn render_plot_format_combo(ui: &mut Ui, plot_format: &mut PlotFormat, id: impl std::hash::Hash) {
+    ComboBox::from_id_salt(id)
+        .selected_text(match plot_format {
+            PlotFormat::Interleaved => "Interleaved",
+            PlotFormat::Block => "Block",
+            PlotFormat::XY => "XY",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(plot_format, PlotFormat::Interleaved, "Interleaved");
+            ui.selectable_value(plot_format, PlotFormat::Block, "Block");
+            ui.selectable_value(plot_format, PlotFormat::XY, "XY");
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_form_roundtrip_preserves_expanded_pipeline_settings() {
+        let session = SessionConfig {
+            transport: TransportConfig::Tcp {
+                addr: String::from("127.0.0.1:9001"),
+            },
+            pipelines: vec![
+                PipelineConfig {
+                    name: String::from("hex"),
+                    framer: FramerConfig::Length {
+                        len_bytes: 4,
+                        endian: Endian::Little,
+                        length_includes_self: true,
+                        max_payload: 8192,
+                    },
+                    decoder: DecoderConfig::Hex {
+                        uppercase: true,
+                        separator: String::from(":"),
+                        bytes_per_group: 2,
+                        endian: Endian::Little,
+                    },
+                },
+                PipelineConfig {
+                    name: String::from("plot"),
+                    framer: FramerConfig::Cobs { max_frame: 4096 },
+                    decoder: DecoderConfig::Plot {
+                        sample_type: SampleType::I16,
+                        endian: Endian::Big,
+                        channels: 3,
+                        format: PlotFormat::Block,
+                    },
+                },
+            ],
+            history_limit: 4096,
+            auto_reconnect: true,
+        };
+
+        let form = ConfigForm::from_session_config(&session);
+        let rebuilt = form.to_session_config();
+
+        assert_eq!(
+            serde_json::to_string(&rebuilt).unwrap(),
+            serde_json::to_string(&session).unwrap()
+        );
+    }
 }

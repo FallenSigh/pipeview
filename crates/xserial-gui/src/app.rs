@@ -1,3 +1,4 @@
+use crate::app_state::{self, PersistedGuiState};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -113,15 +114,16 @@ impl XserialApp {
         let font_candidates = ui_fonts::discover_font_candidates();
         let font_settings = ui_fonts::load_font_settings();
         ui_fonts::apply_font_settings(&ctx, &font_settings, &font_candidates);
+        let saved_state = app_state::load_gui_state();
 
-        Self {
+        let mut app = Self {
             manager,
             tabs: Vec::new(),
             active: 0,
             display: DisplayOptions {
-                show_timestamp: true,
-                show_direction: true,
-                show_pipeline: true,
+                show_timestamp: saved_state.show_timestamp,
+                show_direction: saved_state.show_direction,
+                show_pipeline: saved_state.show_pipeline,
             },
             font_settings_open: false,
             font_candidates,
@@ -137,13 +139,63 @@ impl XserialApp {
             config_form: config::ConfigForm::default(),
             event_rx,
             pending: Vec::new(),
-        }
+        };
+        app.restore_saved_sessions(saved_state);
+        app
     }
 
     fn open_create_config(&mut self) {
         self.config_target = None;
         self.config_form = config::ConfigForm::default();
         self.config_open = true;
+    }
+
+    fn restore_saved_sessions(&mut self, saved_state: PersistedGuiState) {
+        for session_config in saved_state.sessions {
+            self.add_session_tab(session_config);
+        }
+        if !self.tabs.is_empty() {
+            self.active = saved_state.active.min(self.tabs.len() - 1);
+        }
+    }
+
+    fn add_session_tab(&mut self, session_config: SessionConfig) {
+        let history_limit = session_config.history_limit;
+        let auto_reconnect = session_config.auto_reconnect;
+        let handle = self.manager.create(session_config.clone());
+        self.tabs.push(SessionTab {
+            id: handle.id(),
+            session_config,
+            status: ConnectionStatus::Connecting,
+            console: TextBuffer::new(history_limit),
+            hex: HexBuffer::new(history_limit),
+            plot: PlotBuffer::new(history_limit),
+            plot_view: plot_view::PlotViewState::default(),
+            view: View::Text,
+            auto_reconnect,
+            send_input: String::new(),
+            send_mode: SendMode::Text,
+            append_newline: true,
+            send_status: None,
+        });
+    }
+
+    fn persist_gui_state(&self) {
+        app_state::save_gui_state(&PersistedGuiState {
+            sessions: self
+                .tabs
+                .iter()
+                .map(|tab| tab.session_config.clone())
+                .collect(),
+            active: if self.tabs.is_empty() {
+                0
+            } else {
+                self.active.min(self.tabs.len() - 1)
+            },
+            show_timestamp: self.display.show_timestamp,
+            show_direction: self.display.show_direction,
+            show_pipeline: self.display.show_pipeline,
+        });
     }
 
     fn open_edit_config(&mut self, id: u64) {
@@ -166,6 +218,7 @@ impl XserialApp {
             tab.status = ConnectionStatus::Connecting;
             tab.send_status = Some(String::from("Session reconfigured"));
         }
+        self.persist_gui_state();
 
         if let Some(handle) = handle {
             tokio::spawn(async move {
@@ -246,25 +299,9 @@ impl XserialApp {
             if let Some(id) = self.config_target {
                 self.apply_session_config(id, session_config);
             } else {
-                let history_limit = session_config.history_limit;
-                let auto_reconnect = session_config.auto_reconnect;
-                let handle = self.manager.create(session_config.clone());
-                self.tabs.push(SessionTab {
-                    id: handle.id(),
-                    session_config,
-                    status: ConnectionStatus::Connecting,
-                    console: TextBuffer::new(history_limit),
-                    hex: HexBuffer::new(history_limit),
-                    plot: PlotBuffer::new(history_limit),
-                    plot_view: plot_view::PlotViewState::default(),
-                    view: View::Text,
-                    auto_reconnect,
-                    send_input: String::new(),
-                    send_mode: SendMode::Text,
-                    append_newline: true,
-                    send_status: None,
-                });
+                self.add_session_tab(session_config);
                 self.active = self.tabs.len() - 1;
+                self.persist_gui_state();
             }
             open = false;
         }
@@ -277,6 +314,7 @@ impl XserialApp {
     fn render_sidebar(&mut self, ui: &mut egui::Ui) {
         let mut on_new = false;
         let mut on_delete = None;
+        let previous_active = self.active;
 
         Panel::left("sidebar")
             .resizable(false)
@@ -305,6 +343,9 @@ impl XserialApp {
             if self.active >= self.tabs.len() && !self.tabs.is_empty() {
                 self.active = self.tabs.len() - 1;
             }
+            self.persist_gui_state();
+        } else if self.active != previous_active {
+            self.persist_gui_state();
         }
     }
 
@@ -322,6 +363,7 @@ impl XserialApp {
             let manager = self.manager.clone();
             let display = &mut self.display;
             let mut edit_session = None;
+            let mut persist_state = false;
 
             {
                 let tab = &mut self.tabs[self.active];
@@ -350,16 +392,25 @@ impl XserialApp {
                     }
                 });
 
-                if render_session_controls(ui, &manager, tab) {
+                let (configure_clicked, auto_reconnect_changed) =
+                    render_session_controls(ui, &manager, tab);
+                if configure_clicked {
                     edit_session = Some(tab.id);
                 }
+                persist_state |= auto_reconnect_changed;
 
+                let mut display_changed = false;
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Show:");
-                    ui.checkbox(&mut display.show_timestamp, "Timestamp");
-                    ui.checkbox(&mut display.show_direction, "Direction");
-                    ui.checkbox(&mut display.show_pipeline, "Pipe");
+                    display_changed |= ui
+                        .checkbox(&mut display.show_timestamp, "Timestamp")
+                        .changed();
+                    display_changed |= ui
+                        .checkbox(&mut display.show_direction, "Direction")
+                        .changed();
+                    display_changed |= ui.checkbox(&mut display.show_pipeline, "Pipe").changed();
                 });
+                persist_state |= display_changed;
 
                 if let ConnectionStatus::Error(message) = &tab.status {
                     ui.label(egui::RichText::new(message).color(Color32::RED));
@@ -397,6 +448,9 @@ impl XserialApp {
 
             if let Some(id) = edit_session {
                 self.open_edit_config(id);
+            }
+            if persist_state {
+                self.persist_gui_state();
             }
         });
     }
@@ -648,8 +702,9 @@ fn render_session_controls(
     ui: &mut egui::Ui,
     manager: &SessionManager,
     tab: &mut SessionTab,
-) -> bool {
+) -> (bool, bool) {
     let mut configure_clicked = false;
+    let mut auto_reconnect_changed = false;
     ui.horizontal_wrapped(|ui| {
         if ui.button("Connect").clicked() {
             if let Some(handle) = manager.get(tab.id) {
@@ -697,6 +752,8 @@ fn render_session_controls(
 
         let response = ui.checkbox(&mut tab.auto_reconnect, "Auto reconnect");
         if response.changed() {
+            tab.session_config.auto_reconnect = tab.auto_reconnect;
+            auto_reconnect_changed = true;
             if let Some(handle) = manager.get(tab.id) {
                 let enabled = tab.auto_reconnect;
                 tokio::spawn(async move {
@@ -707,7 +764,7 @@ fn render_session_controls(
             }
         }
     });
-    configure_clicked
+    (configure_clicked, auto_reconnect_changed)
 }
 
 fn render_send_panel(ui: &mut egui::Ui, manager: &SessionManager, tab: &mut SessionTab) {
