@@ -1,33 +1,49 @@
+use std::env;
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily, FontId, Style, TextStyle};
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+const FONT_SETTINGS_FILE_NAME: &str = "gui-fonts.json";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FontChoice {
     Auto,
     Default,
     System(String),
 }
 
+impl Default for FontChoice {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FontCandidate {
     pub id: String,
     pub label: String,
-    pub family: String,
-    pub style: String,
+    pub display_label: String,
     pub path: String,
     pub likely_cjk: bool,
+    pub search_key: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiFontSettings {
+    #[serde(default = "default_primary_choice")]
     pub primary_choice: FontChoice,
+    #[serde(default = "default_fallback_choice")]
     pub fallback_choice: FontChoice,
+    #[serde(default = "default_ui_font_size")]
     pub ui_font_size: f32,
+    #[serde(default = "default_monospace_font_size")]
     pub monospace_font_size: f32,
+    #[serde(default = "default_heading_font_size")]
     pub heading_font_size: f32,
 }
 
@@ -45,6 +61,23 @@ impl Default for UiFontSettings {
 
 pub fn discover_font_candidates() -> Vec<FontCandidate> {
     discover_via_fc_list().unwrap_or_else(discover_via_fallback_paths)
+}
+
+pub fn load_font_settings() -> UiFontSettings {
+    match load_font_settings_from_path(&font_settings_path()) {
+        Ok(settings) => settings,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => UiFontSettings::default(),
+        Err(err) => {
+            warn!(error = %err, "Failed to load persisted font settings");
+            UiFontSettings::default()
+        }
+    }
+}
+
+pub fn save_font_settings(settings: &UiFontSettings) {
+    if let Err(err) = save_font_settings_to_path(settings, &font_settings_path()) {
+        warn!(error = %err, "Failed to persist font settings");
+    }
 }
 
 pub fn apply_font_settings(
@@ -222,10 +255,10 @@ fn discover_via_fc_list() -> Option<Vec<FontCandidate>> {
         candidates.push(FontCandidate {
             id,
             label,
-            family: family.clone(),
-            style: style.clone(),
+            display_label: font_display_label(&family, &style, path),
             path: path.to_owned(),
             likely_cjk: is_likely_cjk(&family, &style, path),
+            search_key: build_search_key(&family, &style, path),
         });
     }
 
@@ -253,14 +286,86 @@ fn discover_via_fallback_paths() -> Vec<FontCandidate> {
                 FontCandidate {
                     id: sanitize_id(&stem),
                     label: stem.clone(),
-                    family: stem.clone(),
-                    style: String::from("Regular"),
+                    display_label: format!("{stem}  [CJK]"),
                     path: path.to_owned(),
                     likely_cjk: true,
+                    search_key: build_search_key(&stem, "Regular", path),
                 }
             })
         })
         .collect()
+}
+
+fn font_display_label(family: &str, style: &str, path: &str) -> String {
+    let likely_cjk = is_likely_cjk(family, style, path);
+    let base = if style.is_empty() || style == "Regular" {
+        family.to_owned()
+    } else {
+        format!("{family} ({style})")
+    };
+    if likely_cjk {
+        format!("{base}  [CJK]")
+    } else {
+        base
+    }
+}
+
+fn build_search_key(family: &str, style: &str, path: &str) -> String {
+    format!("{family}\n{style}\n{path}").to_lowercase()
+}
+
+fn font_settings_path() -> PathBuf {
+    if let Ok(path) = env::var("XDG_CONFIG_HOME") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("xserial").join(FONT_SETTINGS_FILE_NAME);
+        }
+    }
+
+    if let Ok(home) = env::var("HOME") {
+        let trimmed = home.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed)
+                .join(".config")
+                .join("xserial")
+                .join(FONT_SETTINGS_FILE_NAME);
+        }
+    }
+
+    PathBuf::from(FONT_SETTINGS_FILE_NAME)
+}
+
+fn load_font_settings_from_path(path: &Path) -> io::Result<UiFontSettings> {
+    let text = fs::read_to_string(path)?;
+    serde_json::from_str(&text).map_err(io::Error::other)
+}
+
+fn save_font_settings_to_path(settings: &UiFontSettings, path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(settings).map_err(io::Error::other)?;
+    fs::write(path, json)
+}
+
+const fn default_ui_font_size() -> f32 {
+    14.0
+}
+
+const fn default_monospace_font_size() -> f32 {
+    14.0
+}
+
+const fn default_heading_font_size() -> f32 {
+    20.0
+}
+
+fn default_primary_choice() -> FontChoice {
+    FontChoice::Auto
+}
+
+fn default_fallback_choice() -> FontChoice {
+    FontChoice::Default
 }
 
 fn sanitize_id(input: &str) -> String {
@@ -297,4 +402,38 @@ fn is_likely_cjk(family: &str, style: &str, path: &str) -> bool {
     ]
     .iter()
     .any(|needle| haystack.contains(needle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn font_settings_roundtrip() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("xserial-gui-font-settings-{unique}"));
+        let path = dir.join("gui-fonts.json");
+        let settings = UiFontSettings {
+            primary_choice: FontChoice::System(String::from("primary")),
+            fallback_choice: FontChoice::System(String::from("fallback")),
+            ui_font_size: 15.5,
+            monospace_font_size: 13.0,
+            heading_font_size: 22.0,
+        };
+
+        save_font_settings_to_path(&settings, &path).unwrap();
+        let loaded = load_font_settings_from_path(&path).unwrap();
+        assert_eq!(loaded.primary_choice, settings.primary_choice);
+        assert_eq!(loaded.fallback_choice, settings.fallback_choice);
+        assert_eq!(loaded.ui_font_size, settings.ui_font_size);
+        assert_eq!(loaded.monospace_font_size, settings.monospace_font_size);
+        assert_eq!(loaded.heading_font_size, settings.heading_font_size);
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

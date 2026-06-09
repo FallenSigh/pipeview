@@ -75,6 +75,10 @@ pub struct XserialApp {
     font_settings: UiFontSettings,
     primary_font_search: String,
     fallback_font_search: String,
+    primary_filtered_fonts: Vec<usize>,
+    fallback_filtered_fonts: Vec<usize>,
+    primary_filter_cache_key: String,
+    fallback_filter_cache_key: String,
     config_open: bool,
     config_target: Option<u64>,
     config_form: config::ConfigForm,
@@ -106,7 +110,7 @@ impl XserialApp {
         });
 
         let font_candidates = ui_fonts::discover_font_candidates();
-        let font_settings = UiFontSettings::default();
+        let font_settings = ui_fonts::load_font_settings();
         ui_fonts::apply_font_settings(&ctx, &font_settings, &font_candidates);
 
         Self {
@@ -123,6 +127,10 @@ impl XserialApp {
             font_settings,
             primary_font_search: String::new(),
             fallback_font_search: String::new(),
+            primary_filtered_fonts: Vec::new(),
+            fallback_filtered_fonts: Vec::new(),
+            primary_filter_cache_key: String::from("\0"),
+            fallback_filter_cache_key: String::from("\0"),
             config_open: false,
             config_target: None,
             config_form: config::ConfigForm::default(),
@@ -393,18 +401,18 @@ impl XserialApp {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("xserial");
                 ui.separator();
-                ui.label(format!(
-                    "Fonts: {} + {}  {:.1} pt",
-                    ui_fonts::font_choice_label(
-                        &self.font_settings.primary_choice,
-                        &self.font_candidates
-                    ),
-                    ui_fonts::font_choice_label(
-                        &self.font_settings.fallback_choice,
-                        &self.font_candidates
-                    ),
-                    self.font_settings.ui_font_size
-                ));
+                // ui.label(format!(
+                //     "Fonts: {} + {}  {:.1} pt",
+                //     ui_fonts::font_choice_label(
+                //         &self.font_settings.primary_choice,
+                //         &self.font_candidates
+                //     ),
+                //     ui_fonts::font_choice_label(
+                //         &self.font_settings.fallback_choice,
+                //         &self.font_candidates
+                //     ),
+                //     self.font_settings.ui_font_size
+                // ));
                 if ui.button("UI Settings").clicked() {
                     self.font_settings_open = true;
                 }
@@ -438,6 +446,7 @@ impl XserialApp {
                     ));
                     if ui.button("Refresh").clicked() {
                         self.font_candidates = ui_fonts::discover_font_candidates();
+                        self.invalidate_font_filters();
                     }
                 });
                 ui.small("Primary font is tried first. Fallback font is used when the primary font lacks a glyph.");
@@ -449,6 +458,8 @@ impl XserialApp {
                     &mut self.font_settings.primary_choice,
                     &mut self.primary_font_search,
                     &self.font_candidates,
+                    &mut self.primary_filtered_fonts,
+                    &mut self.primary_filter_cache_key,
                     true,
                     true,
                     180.0,
@@ -462,6 +473,8 @@ impl XserialApp {
                     &mut self.font_settings.fallback_choice,
                     &mut self.fallback_font_search,
                     &self.font_candidates,
+                    &mut self.fallback_filtered_fonts,
+                    &mut self.fallback_filter_cache_key,
                     true,
                     true,
                     140.0,
@@ -502,8 +515,16 @@ impl XserialApp {
 
         if changed {
             ui_fonts::apply_font_settings(ctx, &self.font_settings, &self.font_candidates);
+            ui_fonts::save_font_settings(&self.font_settings);
         }
         self.font_settings_open = open;
+    }
+
+    fn invalidate_font_filters(&mut self) {
+        self.primary_filtered_fonts.clear();
+        self.fallback_filtered_fonts.clear();
+        self.primary_filter_cache_key = String::from("\0");
+        self.fallback_filter_cache_key = String::from("\0");
     }
 }
 
@@ -514,6 +535,8 @@ fn render_font_selector(
     choice: &mut FontChoice,
     search: &mut String,
     candidates: &[FontCandidate],
+    filtered: &mut Vec<usize>,
+    cache_key: &mut String,
     allow_auto: bool,
     allow_default: bool,
     max_height: f32,
@@ -537,28 +560,52 @@ fn render_font_selector(
         }
     });
     ui.add_space(4.0);
+    refresh_font_filter(search, candidates, filtered, cache_key);
+    ui.small(format!("{} fonts", filtered.len()));
+    let row_height = ui.spacing().interact_size.y;
     egui::ScrollArea::vertical()
         .id_salt(format!("{id_prefix}_scroll"))
         .max_height(max_height)
-        .show(ui, |ui| {
-            let needle = search.trim().to_lowercase();
-            for candidate in candidates.iter().filter(|candidate| {
-                needle.is_empty()
-                    || candidate.label.to_lowercase().contains(&needle)
-                    || candidate.family.to_lowercase().contains(&needle)
-                    || candidate.style.to_lowercase().contains(&needle)
-                    || candidate.path.to_lowercase().contains(&needle)
-            }) {
-                let label = if candidate.likely_cjk {
-                    format!("{}  [CJK]", candidate.label)
-                } else {
-                    candidate.label.clone()
-                };
-                let response = ui.selectable_value(choice, FontChoice::System(candidate.id.clone()), label);
-                *changed |= response.changed();
-                response.on_hover_text(&candidate.path);
+        .auto_shrink([false, false])
+        .show_rows(ui, row_height, filtered.len(), |ui, row_range| {
+            for row in row_range {
+                if let Some(candidate) = filtered.get(row).and_then(|index| candidates.get(*index)) {
+                    let response = ui.selectable_value(
+                        choice,
+                        FontChoice::System(candidate.id.clone()),
+                        candidate.display_label.as_str(),
+                    );
+                    *changed |= response.changed();
+                    response.on_hover_text(&candidate.path);
+                }
             }
         });
+}
+
+fn refresh_font_filter(
+    search: &str,
+    candidates: &[FontCandidate],
+    filtered: &mut Vec<usize>,
+    cache_key: &mut String,
+) {
+    let needle = search.trim().to_lowercase();
+    if *cache_key == needle {
+        return;
+    }
+
+    filtered.clear();
+    if needle.is_empty() {
+        filtered.extend(0..candidates.len());
+    } else {
+        filtered.extend(
+            candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| candidate.search_key.contains(&needle))
+                .map(|(index, _)| index),
+        );
+    }
+    *cache_key = needle;
 }
 
 impl eframe::App for XserialApp {
