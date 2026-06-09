@@ -5,7 +5,7 @@ use xserial_core::protocol::plot::{PlotFormat, SampleType};
 use xserial_core::protocol::text::TextEncoding;
 use xserial_core::transport::TransportConfig;
 use xserial_core::transport::serial::{
-    SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits,
+    SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits, SerialTransport,
 };
 
 #[derive(Clone)]
@@ -411,10 +411,7 @@ fn render_transport_section(ui: &mut Ui, form: &mut ConfigForm) {
 
     match form.transport {
         TransportChoice::Serial => {
-            ui.horizontal(|ui| {
-                ui.label("Port:");
-                ui.text_edit_singleline(&mut form.port);
-            });
+            render_serial_port_combo(ui, form);
             ui.horizontal(|ui| {
                 ui.label("Baud:");
                 ui.add(DragValue::new(&mut form.baud).range(300..=12_000_000));
@@ -504,6 +501,61 @@ fn render_transport_section(ui: &mut Ui, form: &mut ConfigForm) {
                 ui.text_edit_singleline(&mut form.udp_remote);
             });
         }
+    }
+}
+
+fn render_serial_port_combo(ui: &mut Ui, form: &mut ConfigForm) {
+    let available_ports = available_serial_ports();
+    let selected_text = selected_serial_port_text(&form.port, &available_ports);
+
+    ui.horizontal(|ui| {
+        ui.label("Port:");
+        ComboBox::from_id_salt("serial_port")
+            .width(220.0)
+            .selected_text(selected_text)
+            .show_ui(ui, |ui| {
+                if available_ports.is_empty() {
+                    ui.add_enabled(false, egui::Label::new("No serial ports found"));
+                } else {
+                    for port in &available_ports {
+                        ui.selectable_value(&mut form.port, port.clone(), port);
+                    }
+                }
+
+                let current_port = form.port.clone();
+                if !current_port.trim().is_empty()
+                    && !available_ports.iter().any(|port| port == &current_port)
+                {
+                    ui.separator();
+                    ui.selectable_value(
+                        &mut form.port,
+                        current_port.clone(),
+                        format!("{current_port} (current)"),
+                    );
+                }
+            });
+    });
+}
+
+fn available_serial_ports() -> Vec<String> {
+    let mut ports: Vec<_> = SerialTransport::list_ports()
+        .into_iter()
+        .map(|port| port.port_name)
+        .collect();
+    ports.sort();
+    ports.dedup();
+    ports
+}
+
+fn selected_serial_port_text(current_port: &str, available_ports: &[String]) -> String {
+    if current_port.trim().is_empty() {
+        if available_ports.is_empty() {
+            String::from("No serial ports found")
+        } else {
+            String::from("Select port")
+        }
+    } else {
+        current_port.to_owned()
     }
 }
 
@@ -892,6 +944,24 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&rebuilt).unwrap(),
             serde_json::to_string(&session).unwrap()
+        );
+    }
+
+    #[test]
+    fn selected_serial_port_text_prefers_current_value() {
+        let ports = vec![String::from("/dev/ttyUSB0")];
+        assert_eq!(
+            selected_serial_port_text("/dev/ttyUSB1", &ports),
+            "/dev/ttyUSB1"
+        );
+    }
+
+    #[test]
+    fn selected_serial_port_text_uses_placeholder_when_empty() {
+        assert_eq!(selected_serial_port_text("", &[]), "No serial ports found");
+        assert_eq!(
+            selected_serial_port_text("", &[String::from("/dev/ttyUSB0")]),
+            "Select port"
         );
     }
 }
