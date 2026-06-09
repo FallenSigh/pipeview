@@ -10,6 +10,11 @@ import time
 
 PLOT_ESCAPE = 0x1E
 PLOT_MARKER = ord("P")
+DISCONNECT_WINERRORS = {
+    10053,  # Software caused connection abort
+    10054,  # Connection reset by peer
+    10058,  # Socket shutdown race on Windows
+}
 
 
 def build_frame(
@@ -98,44 +103,56 @@ def build_mixed_plot_frame(
     )
     return bytes([PLOT_ESCAPE, PLOT_MARKER]) + cobs_encode(packet) + b"\x00"
 
-def main():
-    p = argparse.ArgumentParser(description="xserial plot test server")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8080)
-    p.add_argument("--channels", type=int, default=1)
-    p.add_argument(
+
+def is_disconnect_error(err: OSError) -> bool:
+    return isinstance(
+        err,
+        (
+            BrokenPipeError,
+            ConnectionAbortedError,
+            ConnectionResetError,
+        ),
+    ) or getattr(err, "winerror", None) in DISCONNECT_WINERRORS
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="xserial plot test server")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8091)
+    parser.add_argument("--channels", type=int, default=1)
+    parser.add_argument(
         "--format",
         choices=("interleaved", "xy"),
         default="interleaved",
         help="plot format (default: interleaved)",
     )
-    p.add_argument(
+    parser.add_argument(
         "--rate",
         type=float,
         default=1024,
         help="samples/sec per channel (default: 1024)",
     )
-    p.add_argument("--freq", type=float, default=1.0, help="sine Hz")
-    p.add_argument("--amp", type=float, default=100)
-    p.add_argument(
+    parser.add_argument("--freq", type=float, default=1.0, help="sine Hz")
+    parser.add_argument("--amp", type=float, default=100)
+    parser.add_argument(
         "--text-interval",
         type=float,
         default=1.0,
         help="seconds between status text messages (default: 1.0)",
     )
-    p.add_argument(
+    parser.add_argument(
         "--framelen",
         type=int,
         default=0,
         help="fixed frame bytes (0=one sample per channel per frame)",
     )
-    p.add_argument(
+    parser.add_argument(
         "--wire-format",
         choices=("mixed", "raw"),
         default="mixed",
         help="mixed sends text+plot on one connection; raw sends plot only",
     )
-    args = p.parse_args()
+    args = parser.parse_args()
 
     sample_size = 4  # f32
 
@@ -176,7 +193,7 @@ def main():
             values.append(args.amp * math.sin(2 * math.pi * args.freq * t + phase))
         return values
 
-    print(f"Listening {args.host}:{args.port} — Ctrl+C to stop")
+    print(f"Listening {args.host}:{args.port} - Ctrl+C to stop")
     print("GUI:")
     print(f"  transport = TCP {args.host}:{args.port}")
     if args.wire_format == "mixed":
@@ -241,8 +258,8 @@ def main():
                                 for index, value in enumerate(values)
                             )
                             line = (
-                                f"时间={now - started_at:7.3f}s "
-                                f"样本={sample_index:7d} {joined}\n"
+                                f"time={now - started_at:7.3f}s "
+                                f"sample={sample_index:7d} {joined}\n"
                             )
                             conn.sendall(line.encode("utf-8"))
                             text_count += 1
@@ -255,8 +272,13 @@ def main():
                         wait = frame_count * frame_interval - elapsed
                         if wait > 0:
                             time.sleep(wait)
-                except (BrokenPipeError, ConnectionResetError):
-                    print(f"[conn -] {addr} ({frame_count} plot frames, {text_count} text lines)")
+                except OSError as err:
+                    if not is_disconnect_error(err):
+                        raise
+                    print(
+                        f"[conn -] {addr} "
+                        f"({frame_count} plot frames, {text_count} text lines)"
+                    )
                 finally:
                     conn.close()
         finally:
@@ -273,6 +295,7 @@ def main():
     finally:
         stop_event.set()
         stream_thread.join(timeout=1.0)
+
 
 if __name__ == "__main__":
     main()

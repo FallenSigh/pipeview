@@ -1,5 +1,6 @@
 use egui::{ComboBox, DragValue, ScrollArea, TextEdit, Ui};
 use xserial_client::config::{DecoderConfig, FramerConfig, PipelineConfig, SessionConfig};
+use xserial_core::protocol::Endian;
 use xserial_core::protocol::plot::PlotFormat;
 use xserial_core::protocol::text::TextEncoding;
 use xserial_core::transport::TransportConfig;
@@ -32,7 +33,9 @@ pub struct PipelineForm {
     pub framer: FramerChoice,
     pub decoder: DecoderChoice,
     pub text_encoding: TextEncoding,
+    pub hex_endian: Endian,
     pub plot_channels: usize,
+    pub plot_endian: Endian,
     pub plot_format: PlotFormat,
 }
 
@@ -76,7 +79,9 @@ impl Default for ConfigForm {
                 framer: FramerChoice::Line,
                 decoder: DecoderChoice::Text,
                 text_encoding: TextEncoding::Utf8,
+                hex_endian: Endian::Big,
                 plot_channels: 1,
+                plot_endian: Endian::Little,
                 plot_format: PlotFormat::Interleaved,
             }],
             history: 10000,
@@ -151,6 +156,14 @@ impl ConfigForm {
                         DecoderConfig::Plot { channels, .. } => *channels,
                         _ => 1,
                     };
+                    let hex_endian = match &pipeline.decoder {
+                        DecoderConfig::Hex { endian, .. } => *endian,
+                        _ => Endian::Big,
+                    };
+                    let plot_endian = match &pipeline.decoder {
+                        DecoderConfig::Plot { endian, .. } => *endian,
+                        _ => Endian::Little,
+                    };
                     let text_encoding = match &pipeline.decoder {
                         DecoderConfig::Text { encoding } => *encoding,
                         DecoderConfig::MixedTextPlot { encoding } => *encoding,
@@ -165,7 +178,9 @@ impl ConfigForm {
                         framer,
                         decoder,
                         text_encoding,
+                        hex_endian,
                         plot_channels,
+                        plot_endian,
                         plot_format,
                     }
                 })
@@ -224,11 +239,11 @@ impl ConfigForm {
                             uppercase: false,
                             separator: " ".into(),
                             bytes_per_group: 1,
-                            endian: xserial_core::protocol::Endian::Big,
+                            endian: pipeline.hex_endian,
                         },
                         DecoderChoice::Plot => DecoderConfig::Plot {
                             sample_type: xserial_core::protocol::plot::SampleType::F32,
-                            endian: xserial_core::protocol::Endian::Little,
+                            endian: pipeline.plot_endian,
                             channels: pipeline.plot_channels.max(1),
                             format: pipeline.plot_format,
                         },
@@ -466,6 +481,10 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
 
                 if matches!(pipeline.decoder, DecoderChoice::Plot) {
                     ui.horizontal(|ui| {
+                        ui.label("Plot endian:");
+                        render_endian_combo(ui, &mut pipeline.plot_endian, format!("plot_endian{}", i));
+                    });
+                    ui.horizontal(|ui| {
                         ui.label("Plot channels:");
                         ui.add(DragValue::new(&mut pipeline.plot_channels).range(1..=32));
                     });
@@ -538,6 +557,13 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
                     }
                 }
 
+                if matches!(pipeline.decoder, DecoderChoice::Hex) {
+                    ui.horizontal(|ui| {
+                        ui.label("Hex endian:");
+                        render_endian_combo(ui, &mut pipeline.hex_endian, format!("hex_endian{}", i));
+                    });
+                }
+
                 if matches!(pipeline.decoder, DecoderChoice::Text) {
                     ui.horizontal(|ui| {
                         ui.label("Text encoding:");
@@ -573,7 +599,9 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
                 framer: FramerChoice::Line,
                 decoder: DecoderChoice::Text,
                 text_encoding: TextEncoding::Utf8,
+                hex_endian: Endian::Big,
                 plot_channels: 1,
+                plot_endian: Endian::Little,
                 plot_format: PlotFormat::Interleaved,
             });
         }
@@ -610,5 +638,17 @@ fn render_text_encoding_combo(ui: &mut Ui, encoding: &mut TextEncoding, index: u
             ui.selectable_value(encoding, TextEncoding::Utf8, "UTF-8");
             ui.selectable_value(encoding, TextEncoding::Latin1, "Latin1");
             ui.selectable_value(encoding, TextEncoding::Ascii, "ASCII");
+        });
+}
+
+fn render_endian_combo(ui: &mut Ui, endian: &mut Endian, id: impl std::hash::Hash) {
+    ComboBox::from_id_salt(id)
+        .selected_text(match endian {
+            Endian::Little => "Little",
+            Endian::Big => "Big",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(endian, Endian::Little, "Little");
+            ui.selectable_value(endian, Endian::Big, "Big");
         });
 }

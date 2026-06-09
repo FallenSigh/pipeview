@@ -9,6 +9,7 @@ use xserial_client::SessionManager;
 use xserial_client::config::SessionConfig;
 use xserial_client::session::SessionEvent;
 use xserial_core::protocol::DecodedData;
+use xserial_core::transport::TransportConfig;
 
 #[derive(Clone)]
 pub enum ConnectionStatus {
@@ -283,7 +284,11 @@ impl XserialApp {
                 let sessions: Vec<_> = self
                     .tabs
                     .iter()
-                    .map(|tab| (tab.id, tab.status.clone()))
+                    .map(|tab| sidebar::SessionListItem {
+                        id: tab.id,
+                        status: tab.status.clone(),
+                        transport_summary: transport_summary(&tab.session_config.transport),
+                    })
                     .collect();
                 sidebar::render(ui, &sessions, &mut self.active, &mut on_new, &mut on_delete);
             });
@@ -528,6 +533,20 @@ impl XserialApp {
     }
 }
 
+fn transport_summary(transport: &TransportConfig) -> String {
+    match transport {
+        TransportConfig::Serial { port, .. } => format!("Serial {}", port),
+        TransportConfig::Tcp { addr } => format!("TCP {}", addr),
+        TransportConfig::Udp {
+            bind_addr,
+            remote_addr,
+        } => match remote_addr {
+            Some(remote_addr) => format!("UDP {} -> {}", bind_addr, remote_addr),
+            None => format!("UDP {}", bind_addr),
+        },
+    }
+}
+
 fn render_font_selector(
     ui: &mut egui::Ui,
     title: &str,
@@ -569,7 +588,8 @@ fn render_font_selector(
         .auto_shrink([false, false])
         .show_rows(ui, row_height, filtered.len(), |ui, row_range| {
             for row in row_range {
-                if let Some(candidate) = filtered.get(row).and_then(|index| candidates.get(*index)) {
+                if let Some(candidate) = filtered.get(row).and_then(|index| candidates.get(*index))
+                {
                     let response = ui.selectable_value(
                         choice,
                         FontChoice::System(candidate.id.clone()),
@@ -800,5 +820,55 @@ fn build_payload(tab: &SessionTab) -> Result<Option<Vec<u8>>, String> {
                 .map(Some)
                 .map_err(|err| format!("invalid hex input ({err})"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::transport_summary;
+    use xserial_core::transport::TransportConfig;
+    use xserial_core::transport::serial::{
+        SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits,
+    };
+
+    #[test]
+    fn transport_summary_formats_tcp_and_serial() {
+        assert_eq!(
+            transport_summary(&TransportConfig::Tcp {
+                addr: String::from("127.0.0.1:8080"),
+            }),
+            "TCP 127.0.0.1:8080"
+        );
+
+        assert_eq!(
+            transport_summary(&TransportConfig::Serial {
+                port: String::from("COM7"),
+                baud_rate: 115200,
+                data_bits: SerialDataBits::Eight,
+                parity: SerialParity::None,
+                stop_bits: SerialStopBits::One,
+                flow_control: SerialFlowControl::None,
+            }),
+            "Serial COM7"
+        );
+    }
+
+    #[test]
+    fn transport_summary_formats_udp() {
+        assert_eq!(
+            transport_summary(&TransportConfig::Udp {
+                bind_addr: String::from("0.0.0.0:9000"),
+                remote_addr: Some(String::from("127.0.0.1:9001")),
+            }),
+            "UDP 0.0.0.0:9000 -> 127.0.0.1:9001"
+        );
+
+        assert_eq!(
+            transport_summary(&TransportConfig::Udp {
+                bind_addr: String::from("127.0.0.1:0"),
+                remote_addr: None,
+            }),
+            "UDP 127.0.0.1:0"
+        );
     }
 }

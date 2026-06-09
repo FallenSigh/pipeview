@@ -60,7 +60,21 @@ impl Default for UiFontSettings {
 }
 
 pub fn discover_font_candidates() -> Vec<FontCandidate> {
-    discover_via_fc_list().unwrap_or_else(discover_via_fallback_paths)
+    let mut candidates = discover_via_fc_list().unwrap_or_default();
+    let mut seen_paths = candidates
+        .iter()
+        .map(|candidate| candidate.path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for candidate in discover_via_font_directories() {
+        if seen_paths.insert(candidate.path.clone()) {
+            candidates.push(candidate);
+        }
+    }
+
+    candidates.sort_by(|a, b| a.label.cmp(&b.label).then(a.path.cmp(&b.path)));
+    candidates.dedup_by(|a, b| a.path == b.path);
+    candidates
 }
 
 pub fn load_font_settings() -> UiFontSettings {
@@ -143,9 +157,7 @@ fn load_selected_font(
 ) -> Option<(String, Vec<u8>)> {
     match choice {
         FontChoice::Default => None,
-        FontChoice::Auto => {
-            load_auto_font(candidates, already_loaded)
-        }
+        FontChoice::Auto => load_auto_font(candidates, already_loaded),
         FontChoice::System(id) => {
             let candidate = candidates.iter().find(|candidate| &candidate.id == id)?;
             if already_loaded.iter().any(|loaded| loaded == &candidate.id) {
@@ -195,19 +207,22 @@ fn apply_font_size(style: &mut Style, settings: &UiFontSettings) {
     style
         .text_styles
         .insert(TextStyle::Body, FontId::proportional(settings.ui_font_size));
-    style
-        .text_styles
-        .insert(TextStyle::Button, FontId::proportional(settings.ui_font_size));
+    style.text_styles.insert(
+        TextStyle::Button,
+        FontId::proportional(settings.ui_font_size),
+    );
     style.text_styles.insert(
         TextStyle::Monospace,
         FontId::monospace(settings.monospace_font_size),
     );
-    style
-        .text_styles
-        .insert(TextStyle::Small, FontId::proportional((settings.ui_font_size - 2.0).max(8.0)));
-    style
-        .text_styles
-        .insert(TextStyle::Heading, FontId::proportional(settings.heading_font_size));
+    style.text_styles.insert(
+        TextStyle::Small,
+        FontId::proportional((settings.ui_font_size - 2.0).max(8.0)),
+    );
+    style.text_styles.insert(
+        TextStyle::Heading,
+        FontId::proportional(settings.heading_font_size),
+    );
 }
 
 fn discover_via_fc_list() -> Option<Vec<FontCandidate>> {
@@ -262,38 +277,47 @@ fn discover_via_fc_list() -> Option<Vec<FontCandidate>> {
         });
     }
 
-    candidates.sort_by(|a, b| a.label.cmp(&b.label).then(a.path.cmp(&b.path)));
-    candidates.dedup_by(|a, b| a.path == b.path);
     (!candidates.is_empty()).then_some(candidates)
 }
 
-fn discover_via_fallback_paths() -> Vec<FontCandidate> {
-    let fallback_paths = [
-        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc",
-        "/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf",
-    ];
-
-    fallback_paths
+fn discover_via_font_directories() -> Vec<FontCandidate> {
+    let mut candidates = Vec::new();
+    let mut stack = platform_font_directories()
         .into_iter()
-        .filter_map(|path| {
-            fs::metadata(path).ok().map(|_| {
-                let stem = Path::new(path)
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("font")
-                    .to_owned();
-                FontCandidate {
-                    id: sanitize_id(&stem),
-                    label: stem.clone(),
-                    display_label: format!("{stem}  [CJK]"),
-                    path: path.to_owned(),
-                    likely_cjk: true,
-                    search_key: build_search_key(&stem, "Regular", path),
+        .filter(|path| path.is_dir())
+        .map(|path| (path, 0usize))
+        .collect::<Vec<_>>();
+
+    while let Some((dir, depth)) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                warn!(path = %dir.display(), error = %err, "Failed to read font directory");
+                continue;
+            }
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+
+            if file_type.is_dir() {
+                if depth < 4 {
+                    stack.push((path, depth + 1));
                 }
-            })
-        })
-        .collect()
+                continue;
+            }
+
+            if let Some(candidate) = font_candidate_from_path(&path) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    candidates
 }
 
 fn font_display_label(family: &str, style: &str, path: &str) -> String {
@@ -315,24 +339,7 @@ fn build_search_key(family: &str, style: &str, path: &str) -> String {
 }
 
 fn font_settings_path() -> PathBuf {
-    if let Ok(path) = env::var("XDG_CONFIG_HOME") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("xserial").join(FONT_SETTINGS_FILE_NAME);
-        }
-    }
-
-    if let Ok(home) = env::var("HOME") {
-        let trimmed = home.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed)
-                .join(".config")
-                .join("xserial")
-                .join(FONT_SETTINGS_FILE_NAME);
-        }
-    }
-
-    PathBuf::from(FONT_SETTINGS_FILE_NAME)
+    font_settings_path_for_os_and_env(env::consts::OS, |key| env::var(key).ok())
 }
 
 fn load_font_settings_from_path(path: &Path) -> io::Result<UiFontSettings> {
@@ -346,6 +353,165 @@ fn save_font_settings_to_path(settings: &UiFontSettings, path: &Path) -> io::Res
     }
     let json = serde_json::to_string_pretty(settings).map_err(io::Error::other)?;
     fs::write(path, json)
+}
+
+fn font_settings_path_for_os_and_env(
+    os: &str,
+    get_env: impl Fn(&str) -> Option<String>,
+) -> PathBuf {
+    match os {
+        "windows" => {
+            if let Some(path) = get_env("APPDATA").filter(|path| !path.trim().is_empty()) {
+                return PathBuf::from(path)
+                    .join("xserial")
+                    .join(FONT_SETTINGS_FILE_NAME);
+            }
+            if let Some(path) = get_env("LOCALAPPDATA").filter(|path| !path.trim().is_empty()) {
+                return PathBuf::from(path)
+                    .join("xserial")
+                    .join(FONT_SETTINGS_FILE_NAME);
+            }
+        }
+        "macos" => {
+            if let Some(home) = get_env("HOME").filter(|path| !path.trim().is_empty()) {
+                return PathBuf::from(home)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("xserial")
+                    .join(FONT_SETTINGS_FILE_NAME);
+            }
+        }
+        _ => {
+            if let Some(path) = get_env("XDG_CONFIG_HOME").filter(|path| !path.trim().is_empty()) {
+                return PathBuf::from(path)
+                    .join("xserial")
+                    .join(FONT_SETTINGS_FILE_NAME);
+            }
+            if let Some(home) = get_env("HOME").filter(|path| !path.trim().is_empty()) {
+                return PathBuf::from(home)
+                    .join(".config")
+                    .join("xserial")
+                    .join(FONT_SETTINGS_FILE_NAME);
+            }
+        }
+    }
+
+    PathBuf::from(FONT_SETTINGS_FILE_NAME)
+}
+
+fn platform_font_directories() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(windir) = env::var("WINDIR")
+            .ok()
+            .filter(|path| !path.trim().is_empty())
+        {
+            dirs.push(PathBuf::from(windir).join("Fonts"));
+        } else {
+            dirs.push(PathBuf::from(r"C:\Windows\Fonts"));
+        }
+
+        if let Some(local_app_data) = env::var("LOCALAPPDATA")
+            .ok()
+            .filter(|path| !path.trim().is_empty())
+        {
+            dirs.push(
+                PathBuf::from(local_app_data)
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Fonts"),
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(PathBuf::from("/System/Library/Fonts"));
+        dirs.push(PathBuf::from("/Library/Fonts"));
+        if let Some(home) = env::var("HOME").ok().filter(|path| !path.trim().is_empty()) {
+            dirs.push(PathBuf::from(home).join("Library").join("Fonts"));
+        }
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        dirs.push(PathBuf::from("/usr/share/fonts"));
+        dirs.push(PathBuf::from("/usr/local/share/fonts"));
+        if let Some(home) = env::var("HOME").ok().filter(|path| !path.trim().is_empty()) {
+            dirs.push(
+                PathBuf::from(&home)
+                    .join(".local")
+                    .join("share")
+                    .join("fonts"),
+            );
+            dirs.push(PathBuf::from(home).join(".fonts"));
+        }
+    }
+
+    dirs
+}
+
+fn font_candidate_from_path(path: &Path) -> Option<FontCandidate> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(extension.as_str(), "ttf" | "ttc" | "otf" | "otc") {
+        return None;
+    }
+
+    let stem = path.file_stem()?.to_str()?.trim();
+    if stem.is_empty() {
+        return None;
+    }
+
+    let (family, style) = split_font_name(stem);
+    let path_string = path.to_string_lossy().into_owned();
+    let id = sanitize_id(&format!("{family}_{style}_{stem}"));
+    let label = if style.is_empty() || style == "Regular" {
+        family.clone()
+    } else {
+        format!("{family} ({style})")
+    };
+
+    Some(FontCandidate {
+        id,
+        label,
+        display_label: font_display_label(&family, &style, &path_string),
+        path: path_string.clone(),
+        likely_cjk: is_likely_cjk(&family, &style, &path_string),
+        search_key: build_search_key(&family, &style, &path_string),
+    })
+}
+
+fn split_font_name(stem: &str) -> (String, String) {
+    let normalized = stem.replace(['_', '-'], " ");
+    let compact = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = compact.to_lowercase();
+
+    for style in [
+        "ExtraBold Italic",
+        "Extra Light Italic",
+        "SemiBold Italic",
+        "Bold Italic",
+        "ExtraBold",
+        "SemiBold",
+        "Medium",
+        "Regular",
+        "Italic",
+        "Bold",
+        "Light",
+        "Thin",
+    ] {
+        let suffix = style.to_lowercase();
+        if let Some(prefix) = lower.strip_suffix(&suffix) {
+            let family = compact[..prefix.trim_end().len()].trim().to_owned();
+            if !family.is_empty() {
+                return (family, style.to_owned());
+            }
+        }
+    }
+
+    (compact, String::from("Regular"))
 }
 
 const fn default_ui_font_size() -> f32 {
@@ -397,6 +563,21 @@ fn is_likely_cjk(family: &str, style: &str, path: &str) -> bool {
         "hei",
         "kai",
         "song",
+        "fang",
+        "yahei",
+        "deng",
+        "ming",
+        "simsun",
+        "simhei",
+        "simkai",
+        "simfang",
+        "msyh",
+        "msjh",
+        "meiryo",
+        "msgothic",
+        "ms gothic",
+        "malgun",
+        "gulim",
         "gothic",
         "mincho",
     ]
@@ -435,5 +616,63 @@ mod tests {
 
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn linux_config_path_uses_xdg() {
+        let path = font_settings_path_for_os_and_env("linux", |key| match key {
+            "XDG_CONFIG_HOME" => Some(String::from("/tmp/xdg-config")),
+            _ => None,
+        });
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/xdg-config")
+                .join("xserial")
+                .join(FONT_SETTINGS_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn windows_config_path_uses_appdata() {
+        let path = font_settings_path_for_os_and_env("windows", |key| match key {
+            "APPDATA" => Some(String::from(r"C:\Users\Test\AppData\Roaming")),
+            _ => None,
+        });
+        assert_eq!(
+            path,
+            PathBuf::from(r"C:\Users\Test\AppData\Roaming")
+                .join("xserial")
+                .join(FONT_SETTINGS_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn macos_config_path_uses_application_support() {
+        let path = font_settings_path_for_os_and_env("macos", |key| match key {
+            "HOME" => Some(String::from("/Users/tester")),
+            _ => None,
+        });
+        assert_eq!(
+            path,
+            PathBuf::from("/Users/tester")
+                .join("Library")
+                .join("Application Support")
+                .join("xserial")
+                .join(FONT_SETTINGS_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn detects_windows_cjk_fonts() {
+        assert!(is_likely_cjk(
+            "Microsoft YaHei UI",
+            "Regular",
+            r"C:\Windows\Fonts\msyh.ttc"
+        ));
+        assert!(is_likely_cjk(
+            "SimSun",
+            "Regular",
+            r"C:\Windows\Fonts\simsun.ttc"
+        ));
     }
 }
