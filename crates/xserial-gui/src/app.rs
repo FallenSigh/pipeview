@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use crate::buffers::{HexBuffer, PlotBuffer, TextBuffer};
 use crate::panels::{config, console, hex_view, plot_view, sidebar};
+use crate::ui_fonts::{self, FontCandidate, FontChoice, UiFontSettings};
 use egui::{Color32, Layout, Panel, Pos2, Rect, TextEdit, UiBuilder};
 use xserial_client::SessionManager;
 use xserial_client::config::SessionConfig;
@@ -69,6 +70,11 @@ pub struct XserialApp {
     tabs: Vec<SessionTab>,
     active: usize,
     display: DisplayOptions,
+    font_settings_open: bool,
+    font_candidates: Vec<FontCandidate>,
+    font_settings: UiFontSettings,
+    primary_font_search: String,
+    fallback_font_search: String,
     config_open: bool,
     config_target: Option<u64>,
     config_form: config::ConfigForm,
@@ -83,6 +89,7 @@ impl XserialApp {
         ctx: egui::Context,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel();
+        let repaint_ctx = ctx.clone();
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
@@ -90,13 +97,17 @@ impl XserialApp {
                         if event_tx.send(event).is_err() {
                             break;
                         }
-                        ctx.request_repaint();
+                        repaint_ctx.request_repaint();
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
+
+        let font_candidates = ui_fonts::discover_font_candidates();
+        let font_settings = UiFontSettings::default();
+        ui_fonts::apply_font_settings(&ctx, &font_settings, &font_candidates);
 
         Self {
             manager,
@@ -107,6 +118,11 @@ impl XserialApp {
                 show_direction: true,
                 show_pipeline: true,
             },
+            font_settings_open: false,
+            font_candidates,
+            font_settings,
+            primary_font_search: String::new(),
+            fallback_font_search: String::new(),
             config_open: false,
             config_target: None,
             config_form: config::ConfigForm::default(),
@@ -371,6 +387,178 @@ impl XserialApp {
             }
         });
     }
+
+    fn render_top_bar(&mut self, ui: &mut egui::Ui) {
+        Panel::top("top_bar").show_inside(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.heading("xserial");
+                ui.separator();
+                ui.label(format!(
+                    "Fonts: {} + {}  {:.1} pt",
+                    ui_fonts::font_choice_label(
+                        &self.font_settings.primary_choice,
+                        &self.font_candidates
+                    ),
+                    ui_fonts::font_choice_label(
+                        &self.font_settings.fallback_choice,
+                        &self.font_candidates
+                    ),
+                    self.font_settings.ui_font_size
+                ));
+                if ui.button("UI Settings").clicked() {
+                    self.font_settings_open = true;
+                }
+            });
+        });
+    }
+
+    fn render_font_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.font_settings_open {
+            return;
+        }
+
+        let mut open = self.font_settings_open;
+        let mut changed = false;
+        egui::Window::new("UI Settings")
+            .open(&mut open)
+            .default_width(520.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.heading("Fonts");
+                ui.horizontal(|ui| {
+                    ui.label("Primary:");
+                    ui.monospace(ui_fonts::font_choice_label(
+                        &self.font_settings.primary_choice,
+                        &self.font_candidates,
+                    ));
+                    ui.label("Fallback:");
+                    ui.monospace(ui_fonts::font_choice_label(
+                        &self.font_settings.fallback_choice,
+                        &self.font_candidates,
+                    ));
+                    if ui.button("Refresh").clicked() {
+                        self.font_candidates = ui_fonts::discover_font_candidates();
+                    }
+                });
+                ui.small("Primary font is tried first. Fallback font is used when the primary font lacks a glyph.");
+                ui.add_space(6.0);
+                render_font_selector(
+                    ui,
+                    "Primary font",
+                    "primary_font_choice",
+                    &mut self.font_settings.primary_choice,
+                    &mut self.primary_font_search,
+                    &self.font_candidates,
+                    true,
+                    true,
+                    180.0,
+                    &mut changed,
+                );
+                ui.separator();
+                render_font_selector(
+                    ui,
+                    "Fallback font",
+                    "fallback_font_choice",
+                    &mut self.font_settings.fallback_choice,
+                    &mut self.fallback_font_search,
+                    &self.font_candidates,
+                    true,
+                    true,
+                    140.0,
+                    &mut changed,
+                );
+                ui.separator();
+                ui.heading("Sizes");
+                ui.label("UI font size");
+                changed |= ui
+                    .add(
+                        egui::Slider::new(&mut self.font_settings.ui_font_size, 10.0..=28.0)
+                            .suffix(" pt"),
+                    )
+                    .changed();
+                ui.label("Monospace font size");
+                changed |= ui
+                    .add(
+                        egui::Slider::new(
+                            &mut self.font_settings.monospace_font_size,
+                            10.0..=28.0,
+                        )
+                        .suffix(" pt"),
+                    )
+                    .changed();
+                ui.label("Heading size");
+                changed |= ui
+                    .add(
+                        egui::Slider::new(&mut self.font_settings.heading_font_size, 14.0..=40.0)
+                            .suffix(" pt"),
+                    )
+                    .changed();
+                ui.separator();
+                ui.heading("Preview");
+                ui.label("The quick brown fox jumps over the lazy dog.");
+                ui.label("中文预览：串口、网络、绘图、十六进制、会话管理。");
+                ui.monospace("Monospace preview: 0123456789 ABCDEF deadbeef");
+            });
+
+        if changed {
+            ui_fonts::apply_font_settings(ctx, &self.font_settings, &self.font_candidates);
+        }
+        self.font_settings_open = open;
+    }
+}
+
+fn render_font_selector(
+    ui: &mut egui::Ui,
+    title: &str,
+    id_prefix: &str,
+    choice: &mut FontChoice,
+    search: &mut String,
+    candidates: &[FontCandidate],
+    allow_auto: bool,
+    allow_default: bool,
+    max_height: f32,
+    changed: &mut bool,
+) {
+    ui.label(title);
+    ui.horizontal(|ui| {
+        ui.label("Search:");
+        ui.text_edit_singleline(search);
+    });
+    ui.horizontal_wrapped(|ui| {
+        if allow_auto {
+            *changed |= ui
+                .selectable_value(choice, FontChoice::Auto, "Auto")
+                .changed();
+        }
+        if allow_default {
+            *changed |= ui
+                .selectable_value(choice, FontChoice::Default, "Default")
+                .changed();
+        }
+    });
+    ui.add_space(4.0);
+    egui::ScrollArea::vertical()
+        .id_salt(format!("{id_prefix}_scroll"))
+        .max_height(max_height)
+        .show(ui, |ui| {
+            let needle = search.trim().to_lowercase();
+            for candidate in candidates.iter().filter(|candidate| {
+                needle.is_empty()
+                    || candidate.label.to_lowercase().contains(&needle)
+                    || candidate.family.to_lowercase().contains(&needle)
+                    || candidate.style.to_lowercase().contains(&needle)
+                    || candidate.path.to_lowercase().contains(&needle)
+            }) {
+                let label = if candidate.likely_cjk {
+                    format!("{}  [CJK]", candidate.label)
+                } else {
+                    candidate.label.clone()
+                };
+                let response = ui.selectable_value(choice, FontChoice::System(candidate.id.clone()), label);
+                *changed |= response.changed();
+                response.on_hover_text(&candidate.path);
+            }
+        });
 }
 
 impl eframe::App for XserialApp {
@@ -381,6 +569,8 @@ impl eframe::App for XserialApp {
         if self.wants_live_plot_repaint() {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
+        self.render_top_bar(ui);
+        self.render_font_settings_window(ui.ctx());
         self.render_config_window(ui.ctx());
         self.render_sidebar(ui);
         self.render_main_panel(ui);

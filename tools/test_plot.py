@@ -241,8 +241,8 @@ def main():
                                 for index, value in enumerate(values)
                             )
                             line = (
-                                f"t={now - started_at:7.3f}s "
-                                f"sample={sample_index:7d} {joined}\n"
+                                f"时间={now - started_at:7.3f}s "
+                                f"样本={sample_index:7d} {joined}\n"
                             )
                             conn.sendall(line.encode("utf-8"))
                             text_count += 1

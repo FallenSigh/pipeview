@@ -1,6 +1,7 @@
 use egui::{ComboBox, DragValue, ScrollArea, TextEdit, Ui};
 use xserial_client::config::{DecoderConfig, FramerConfig, PipelineConfig, SessionConfig};
 use xserial_core::protocol::plot::PlotFormat;
+use xserial_core::protocol::text::TextEncoding;
 use xserial_core::transport::TransportConfig;
 use xserial_core::transport::serial::{
     SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits,
@@ -30,6 +31,7 @@ pub struct PipelineForm {
     pub name: String,
     pub framer: FramerChoice,
     pub decoder: DecoderChoice,
+    pub text_encoding: TextEncoding,
     pub plot_channels: usize,
     pub plot_format: PlotFormat,
 }
@@ -73,6 +75,7 @@ impl Default for ConfigForm {
                 name: "text".into(),
                 framer: FramerChoice::Line,
                 decoder: DecoderChoice::Text,
+                text_encoding: TextEncoding::Utf8,
                 plot_channels: 1,
                 plot_format: PlotFormat::Interleaved,
             }],
@@ -148,6 +151,11 @@ impl ConfigForm {
                         DecoderConfig::Plot { channels, .. } => *channels,
                         _ => 1,
                     };
+                    let text_encoding = match &pipeline.decoder {
+                        DecoderConfig::Text { encoding } => *encoding,
+                        DecoderConfig::MixedTextPlot { encoding } => *encoding,
+                        _ => TextEncoding::Utf8,
+                    };
                     let plot_format = match &pipeline.decoder {
                         DecoderConfig::Plot { format, .. } => *format,
                         _ => PlotFormat::Interleaved,
@@ -156,6 +164,7 @@ impl ConfigForm {
                         name: pipeline.name.clone(),
                         framer,
                         decoder,
+                        text_encoding,
                         plot_channels,
                         plot_format,
                     }
@@ -209,7 +218,7 @@ impl ConfigForm {
                     },
                     decoder: match &pipeline.decoder {
                         DecoderChoice::Text => DecoderConfig::Text {
-                            encoding: xserial_core::protocol::text::TextEncoding::Utf8,
+                            encoding: pipeline.text_encoding,
                         },
                         DecoderChoice::Hex => DecoderConfig::Hex {
                             uppercase: false,
@@ -224,7 +233,7 @@ impl ConfigForm {
                             format: pipeline.plot_format,
                         },
                         DecoderChoice::MixedTextPlot => DecoderConfig::MixedTextPlot {
-                            encoding: xserial_core::protocol::text::TextEncoding::Utf8,
+                            encoding: pipeline.text_encoding,
                         },
                     },
                 })
@@ -529,6 +538,21 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
                     }
                 }
 
+                if matches!(pipeline.decoder, DecoderChoice::Text) {
+                    ui.horizontal(|ui| {
+                        ui.label("Text encoding:");
+                        render_text_encoding_combo(ui, &mut pipeline.text_encoding, i);
+                    });
+                }
+
+                if matches!(pipeline.decoder, DecoderChoice::MixedTextPlot) {
+                    ui.horizontal(|ui| {
+                        ui.label("Mixed text encoding:");
+                        render_text_encoding_combo(ui, &mut pipeline.text_encoding, i);
+                    });
+                    ui.small("Plot sample type, endian, format, and channels come from the mixed packet header.");
+                }
+
                 if matches!(pipeline.decoder, DecoderChoice::MixedTextPlot)
                     && !matches!(pipeline.framer, FramerChoice::MixedTextPlot)
                 {
@@ -548,6 +572,7 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
                 name: format!("p{}", form.pipelines.len()),
                 framer: FramerChoice::Line,
                 decoder: DecoderChoice::Text,
+                text_encoding: TextEncoding::Utf8,
                 plot_channels: 1,
                 plot_format: PlotFormat::Interleaved,
             });
@@ -572,4 +597,18 @@ pub fn render(ui: &mut Ui, form: &mut ConfigForm, submit_label: &str) -> Option<
     });
 
     result
+}
+
+fn render_text_encoding_combo(ui: &mut Ui, encoding: &mut TextEncoding, index: usize) {
+    ComboBox::from_id_salt(format!("text_encoding{}", index))
+        .selected_text(match encoding {
+            TextEncoding::Utf8 => "UTF-8",
+            TextEncoding::Latin1 => "Latin1",
+            TextEncoding::Ascii => "ASCII",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(encoding, TextEncoding::Utf8, "UTF-8");
+            ui.selectable_value(encoding, TextEncoding::Latin1, "Latin1");
+            ui.selectable_value(encoding, TextEncoding::Ascii, "ASCII");
+        });
 }
