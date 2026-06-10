@@ -1,9 +1,10 @@
 use crate::app_state::{self, PersistedGuiState};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::buffers::{HexBuffer, PlotBuffer, TextBuffer};
 use crate::panels::{config, console, hex_view, plot_view, sidebar};
+use crate::perf::{DrainStats, GuiProfiler, GuiSnapshot};
 use crate::ui_fonts::{self, FontCandidate, FontChoice, UiFontSettings};
 use egui::{Color32, Layout, Panel, Pos2, Rect, TextEdit, UiBuilder};
 use xserial_client::SessionManager;
@@ -11,6 +12,8 @@ use xserial_client::config::SessionConfig;
 use xserial_client::session::SessionEvent;
 use xserial_core::protocol::DecodedData;
 use xserial_core::transport::TransportConfig;
+
+const DATA_REPAINT_INTERVAL: Duration = Duration::from_millis(33);
 
 #[derive(Clone)]
 pub enum ConnectionStatus {
@@ -86,6 +89,7 @@ pub struct XserialApp {
     config_form: config::ConfigForm,
     event_rx: mpsc::Receiver<SessionEvent>,
     pending: Vec<SessionEvent>,
+    profiler: GuiProfiler,
 }
 
 impl XserialApp {
@@ -94,16 +98,32 @@ impl XserialApp {
         mut rx: tokio::sync::broadcast::Receiver<SessionEvent>,
         ctx: egui::Context,
     ) -> Self {
+        let profiler = GuiProfiler::from_env();
+        let repaint_counter = profiler.repaint_counter();
         let (event_tx, event_rx) = mpsc::channel();
         let repaint_ctx = ctx.clone();
         tokio::spawn(async move {
+            let mut last_repaint = Instant::now()
+                .checked_sub(DATA_REPAINT_INTERVAL)
+                .unwrap_or_else(Instant::now);
+            let mut delayed_repaint_pending = false;
             loop {
                 match rx.recv().await {
                     Ok(event) => {
                         if event_tx.send(event).is_err() {
                             break;
                         }
-                        repaint_ctx.request_repaint();
+                        let elapsed = last_repaint.elapsed();
+                        if elapsed >= DATA_REPAINT_INTERVAL {
+                            repaint_counter.increment();
+                            repaint_ctx.request_repaint();
+                            last_repaint = Instant::now();
+                            delayed_repaint_pending = false;
+                        } else if !delayed_repaint_pending {
+                            repaint_counter.increment();
+                            repaint_ctx.request_repaint_after(DATA_REPAINT_INTERVAL - elapsed);
+                            delayed_repaint_pending = true;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -139,6 +159,7 @@ impl XserialApp {
             config_form: config::ConfigForm::default(),
             event_rx,
             pending: Vec::new(),
+            profiler,
         };
         app.restore_saved_sessions(saved_state);
         app
@@ -230,11 +251,22 @@ impl XserialApp {
     }
 
     fn drain_events(&mut self) {
+        let started = Instant::now();
+        let mut stats = DrainStats {
+            drained_events: 0,
+            drained_data_events: 0,
+            drained_text_events: 0,
+            drained_hex_events: 0,
+            drained_plot_events: 0,
+            pending_events: 0,
+        };
         while let Ok(event) = self.event_rx.try_recv() {
             self.pending.push(event);
         }
+        stats.pending_events = self.pending.len();
 
         for event in self.pending.drain(..) {
+            stats.drained_events += 1;
             match event {
                 SessionEvent::Connected(id) => {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
@@ -252,26 +284,62 @@ impl XserialApp {
                     }
                 }
                 SessionEvent::Data(id, entry) => {
+                    stats.drained_data_events += 1;
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
                         match &entry.data {
-                            DecodedData::Text(_) => tab.console.push(&entry),
-                            DecodedData::Hex(_) => tab.hex.push(&entry),
-                            DecodedData::Plot(_) => tab.plot.push(&entry),
+                            DecodedData::Text(_) => {
+                                stats.drained_text_events += 1;
+                                tab.console.push(&entry);
+                            }
+                            DecodedData::Hex(_) => {
+                                stats.drained_hex_events += 1;
+                                tab.hex.push(&entry);
+                            }
+                            DecodedData::Plot(_) => {
+                                stats.drained_plot_events += 1;
+                                tab.plot.push(&entry);
+                            }
                             DecodedData::Binary(_) => {}
                         }
                     }
                 }
             }
         }
+        self.profiler.record_drain(started.elapsed(), stats);
     }
 
     fn wants_live_plot_repaint(&self) -> bool {
-        self.tabs
-            .get(self.active)
-            .map(|tab| {
-                matches!(tab.view, View::Plot) && matches!(tab.status, ConnectionStatus::Connected)
-            })
-            .unwrap_or(false)
+        self.tabs.iter().enumerate().any(|(index, tab)| {
+            matches!(tab.status, ConnectionStatus::Connected)
+                && (tab.plot_view.detached
+                    || (index == self.active && matches!(tab.view, View::Plot)))
+        })
+    }
+
+    fn profiler_snapshot(&self) -> GuiSnapshot {
+        if let Some(tab) = self.tabs.get(self.active) {
+            GuiSnapshot {
+                tabs: self.tabs.len(),
+                active_view: match tab.view {
+                    View::Text => "text",
+                    View::Hex => "hex",
+                    View::Plot => "plot",
+                },
+                active_text_lines: tab.console.len(),
+                active_hex_lines: tab.hex.len(),
+                active_plot_series: tab.plot.series_len(),
+                active_plot_points: tab.plot.total_points(),
+            }
+        } else {
+            GuiSnapshot {
+                tabs: self.tabs.len(),
+                active_view: "none",
+                active_text_lines: 0,
+                active_hex_lines: 0,
+                active_plot_series: 0,
+                active_plot_points: 0,
+            }
+        }
     }
 
     fn render_config_window(&mut self, ctx: &egui::Context) {
@@ -313,6 +381,7 @@ impl XserialApp {
 
     fn render_sidebar(&mut self, ui: &mut egui::Ui) {
         let mut on_new = false;
+        let mut on_edit = None;
         let mut on_delete = None;
         let previous_active = self.active;
 
@@ -328,11 +397,24 @@ impl XserialApp {
                         transport_summary: transport_summary(&tab.session_config.transport),
                     })
                     .collect();
-                sidebar::render(ui, &sessions, &mut self.active, &mut on_new, &mut on_delete);
+                sidebar::render(
+                    ui,
+                    &sessions,
+                    &mut self.active,
+                    &mut on_new,
+                    &mut on_edit,
+                    &mut on_delete,
+                );
             });
 
         if on_new {
             self.open_create_config();
+        }
+
+        if let Some(index) = on_edit
+            && let Some(tab) = self.tabs.get(index)
+        {
+            self.open_edit_config(tab.id);
         }
 
         if let Some(index) = on_delete {
@@ -362,8 +444,10 @@ impl XserialApp {
 
             let manager = self.manager.clone();
             let display = &mut self.display;
-            let mut edit_session = None;
             let mut persist_state = false;
+            let mut text_render = None;
+            let mut hex_render = None;
+            let mut plot_render = None;
 
             {
                 let tab = &mut self.tabs[self.active];
@@ -392,11 +476,7 @@ impl XserialApp {
                     }
                 });
 
-                let (configure_clicked, auto_reconnect_changed) =
-                    render_session_controls(ui, &manager, tab);
-                if configure_clicked {
-                    edit_session = Some(tab.id);
-                }
+                let auto_reconnect_changed = render_session_controls(ui, &manager, tab);
                 persist_state |= auto_reconnect_changed;
 
                 let mut display_changed = false;
@@ -431,10 +511,41 @@ impl XserialApp {
                     UiBuilder::new()
                         .max_rect(receive_rect)
                         .layout(Layout::top_down(egui::Align::Min).with_cross_justify(true)),
-                    |ui| match tab.view {
-                        View::Text => console::render(ui, &tab.console, *display),
-                        View::Hex => hex_view::render(ui, &tab.hex, *display),
-                        View::Plot => plot_view::render(ui, &tab.plot, tab.id, &mut tab.plot_view),
+                    |ui| {
+                        let started = Instant::now();
+                        match tab.view {
+                            View::Text => {
+                                let line_count = console::render(ui, &tab.console, *display);
+                                text_render = Some((started.elapsed(), line_count));
+                            }
+                            View::Hex => {
+                                let line_count = hex_view::render(ui, &tab.hex, *display);
+                                hex_render = Some((started.elapsed(), line_count));
+                            }
+                            View::Plot => {
+                                if tab.plot_view.detached {
+                                    ui.heading(format!(
+                                        "Plot window detached for Session {}",
+                                        tab.id
+                                    ));
+                                    ui.label("The plot is currently shown in a floating window.");
+                                    if ui.button("Dock Plot Back").clicked() {
+                                        tab.plot_view.detached = false;
+                                    }
+                                } else {
+                                    let output = plot_view::render(
+                                        ui,
+                                        &mut tab.plot,
+                                        tab.id,
+                                        &mut tab.plot_view,
+                                    );
+                                    if output.toggle_detached {
+                                        tab.plot_view.detached = true;
+                                    }
+                                    plot_render = Some((started.elapsed(), output.stats));
+                                }
+                            }
+                        }
                     },
                 );
 
@@ -446,13 +557,59 @@ impl XserialApp {
                 );
             }
 
-            if let Some(id) = edit_session {
-                self.open_edit_config(id);
+            if let Some((elapsed, line_count)) = text_render {
+                self.profiler.record_text_render(elapsed, line_count);
+            }
+            if let Some((elapsed, line_count)) = hex_render {
+                self.profiler.record_hex_render(elapsed, line_count);
+            }
+            if let Some((elapsed, stats)) = plot_render {
+                self.profiler.record_plot_render(elapsed, stats);
             }
             if persist_state {
                 self.persist_gui_state();
             }
         });
+    }
+
+    fn render_detached_plot_windows(&mut self, ctx: &egui::Context) {
+        let mut plot_renders = Vec::new();
+
+        for tab in &mut self.tabs {
+            if !tab.plot_view.detached {
+                continue;
+            }
+
+            let mut open = true;
+            let mut output = None;
+            egui::Window::new(format!("Plot - Session {}", tab.id))
+                .open(&mut open)
+                .default_width(720.0)
+                .default_height(480.0)
+                .resizable(true)
+                .vscroll(false)
+                .show(ctx, |ui| {
+                    let started = Instant::now();
+                    let render_output =
+                        plot_view::render(ui, &mut tab.plot, tab.id, &mut tab.plot_view);
+                    output = Some((started.elapsed(), render_output));
+                });
+
+            if let Some((elapsed, render_output)) = output {
+                if render_output.toggle_detached {
+                    tab.plot_view.detached = false;
+                }
+                plot_renders.push((elapsed, render_output.stats));
+            }
+
+            if !open {
+                tab.plot_view.detached = false;
+            }
+        }
+
+        for (elapsed, stats) in plot_renders {
+            self.profiler.record_plot_render(elapsed, stats);
+        }
     }
 
     fn render_top_bar(&mut self, ui: &mut egui::Ui) {
@@ -686,6 +843,7 @@ impl eframe::App for XserialApp {
     fn update(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {}
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let frame_started = Instant::now();
         self.drain_events();
         if self.wants_live_plot_repaint() {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
@@ -695,6 +853,9 @@ impl eframe::App for XserialApp {
         self.render_config_window(ui.ctx());
         self.render_sidebar(ui);
         self.render_main_panel(ui);
+        self.render_detached_plot_windows(ui.ctx());
+        self.profiler
+            .record_frame(frame_started.elapsed(), self.profiler_snapshot());
     }
 }
 
@@ -702,46 +863,42 @@ fn render_session_controls(
     ui: &mut egui::Ui,
     manager: &SessionManager,
     tab: &mut SessionTab,
-) -> (bool, bool) {
-    let mut configure_clicked = false;
+) -> bool {
     let mut auto_reconnect_changed = false;
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Connect").clicked() {
+        let connected = matches!(
+            tab.status,
+            ConnectionStatus::Connected | ConnectionStatus::Connecting
+        );
+        let connect_label = if connected { "Disconnect" } else { "Connect" };
+        if ui.button(connect_label).clicked() {
             if let Some(handle) = manager.get(tab.id) {
-                tab.status = ConnectionStatus::Connecting;
-                tokio::spawn(async move {
-                    let _ = handle.connect().await;
-                });
+                if connected {
+                    tab.status = ConnectionStatus::Disconnected;
+                    tokio::spawn(async move {
+                        let _ = handle.disconnect().await;
+                    });
+                } else {
+                    tab.status = ConnectionStatus::Connecting;
+                    tokio::spawn(async move {
+                        let _ = handle.connect().await;
+                    });
+                }
             } else {
                 tab.status = ConnectionStatus::Error(String::from("session not found"));
             }
         }
 
-        if ui.button("Disconnect").clicked() {
-            if let Some(handle) = manager.get(tab.id) {
-                tab.status = ConnectionStatus::Disconnected;
-                tokio::spawn(async move {
-                    let _ = handle.disconnect().await;
-                });
-            } else {
-                tab.status = ConnectionStatus::Error(String::from("session not found"));
-            }
-        }
-
-        if ui.button("Reconnect").clicked() {
-            if let Some(handle) = manager.get(tab.id) {
-                tab.status = ConnectionStatus::Connecting;
-                tokio::spawn(async move {
-                    let _ = handle.reconnect().await;
-                });
-            } else {
-                tab.status = ConnectionStatus::Error(String::from("session not found"));
-            }
-        }
-
-        if ui.button("Configure").clicked() {
-            configure_clicked = true;
-        }
+        // if ui.button("Reconnect").clicked() {
+        //     if let Some(handle) = manager.get(tab.id) {
+        //         tab.status = ConnectionStatus::Connecting;
+        //         tokio::spawn(async move {
+        //             let _ = handle.reconnect().await;
+        //         });
+        //     } else {
+        //         tab.status = ConnectionStatus::Error(String::from("session not found"));
+        //     }
+        // }
 
         if ui.button("Clear").clicked() {
             tab.console.clear();
@@ -764,7 +921,7 @@ fn render_session_controls(
             }
         }
     });
-    (configure_clicked, auto_reconnect_changed)
+    auto_reconnect_changed
 }
 
 fn render_send_panel(ui: &mut egui::Ui, manager: &SessionManager, tab: &mut SessionTab) {

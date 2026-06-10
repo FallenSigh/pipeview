@@ -1,6 +1,13 @@
 use crate::buffers::{PlotBuffer, PlotSeriesKind};
+use crate::perf::PlotRenderStats;
 use egui::{Button, Ui, vec2};
 use egui_plot::{Legend, Line, Plot, PlotBounds, PlotPoints};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PlotDisplayMode {
+    Embedded,
+    Detached,
+}
 
 pub struct PlotViewState {
     pub lock_x: bool,
@@ -8,6 +15,7 @@ pub struct PlotViewState {
     pub box_zoom: bool,
     pub follow_latest: bool,
     pub last_bounds: Option<PlotBounds>,
+    pub detached: bool,
 }
 
 impl Default for PlotViewState {
@@ -18,14 +26,48 @@ impl Default for PlotViewState {
             box_zoom: false,
             follow_latest: false,
             last_bounds: None,
+            detached: false,
         }
     }
 }
 
-pub fn render(ui: &mut Ui, buf: &PlotBuffer, session_id: u64, state: &mut PlotViewState) {
+pub struct PlotRenderOutput {
+    pub stats: PlotRenderStats,
+    pub toggle_detached: bool,
+}
+
+pub fn render(
+    ui: &mut Ui,
+    buf: &mut PlotBuffer,
+    session_id: u64,
+    state: &mut PlotViewState,
+) -> PlotRenderOutput {
+    let mode = if state.detached {
+        PlotDisplayMode::Detached
+    } else {
+        PlotDisplayMode::Embedded
+    };
+    let mut toggle_detached = false;
+
     if buf.is_empty() {
-        ui.label("no plot data");
-        return;
+        ui.horizontal_wrapped(|ui| {
+            let toggle_label = match mode {
+                PlotDisplayMode::Embedded => "Pop Out",
+                PlotDisplayMode::Detached => "Dock Back",
+            };
+            if ui.button(toggle_label).clicked() {
+                toggle_detached = true;
+            }
+            ui.label("no plot data");
+        });
+        return PlotRenderOutput {
+            stats: PlotRenderStats {
+                series_count: 0,
+                stored_points: 0,
+                rendered_points: 0,
+            },
+            toggle_detached,
+        };
     }
 
     let mut auto_fit = false;
@@ -39,6 +81,13 @@ pub fn render(ui: &mut Ui, buf: &PlotBuffer, session_id: u64, state: &mut PlotVi
         }
         if ui.button("Reset View").clicked() {
             reset_view = true;
+        }
+        let toggle_label = match mode {
+            PlotDisplayMode::Embedded => "Pop Out",
+            PlotDisplayMode::Detached => "Dock Back",
+        };
+        if ui.button(toggle_label).clicked() {
+            toggle_detached = true;
         }
         ui.separator();
         ui.checkbox(&mut state.lock_x, "Lock X");
@@ -92,7 +141,7 @@ pub fn render(ui: &mut Ui, buf: &PlotBuffer, session_id: u64, state: &mut PlotVi
         });
     }
 
-    let data_bounds = plot_bounds(buf);
+    let data_bounds = buf.plot_bounds();
     let mut plot = Plot::new(format!("plot_view_{session_id}"))
         .legend(Legend::default())
         .allow_boxed_zoom(state.box_zoom)
@@ -107,6 +156,7 @@ pub fn render(ui: &mut Ui, buf: &PlotBuffer, session_id: u64, state: &mut PlotVi
         plot = plot.reset();
     }
 
+    let mut rendered_points = 0usize;
     plot.show(ui, |plot_ui| {
         let current_bounds = plot_ui.plot_bounds();
         state.last_bounds = current_bounds.is_finite().then_some(current_bounds);
@@ -123,7 +173,10 @@ pub fn render(ui: &mut Ui, buf: &PlotBuffer, session_id: u64, state: &mut PlotVi
             if let Some(bounds) = data_bounds {
                 let current_width = current_bounds.width();
                 let data_width = bounds.width();
-                let x_range = if current_width.is_finite() && current_width > 0.0 && data_width > current_width {
+                let x_range = if current_width.is_finite()
+                    && current_width > 0.0
+                    && data_width > current_width
+                {
                     (bounds.max()[0] - current_width)..=bounds.max()[0]
                 } else {
                     bounds.min()[0]..=bounds.max()[0]
@@ -132,7 +185,10 @@ pub fn render(ui: &mut Ui, buf: &PlotBuffer, session_id: u64, state: &mut PlotVi
                 plot_ui.set_plot_bounds_x(x_range.clone());
 
                 let mut followed = current_bounds;
-                followed.set_x(&PlotBounds::from_min_max([*x_range.start(), current_bounds.min()[1]], [*x_range.end(), current_bounds.max()[1]]));
+                followed.set_x(&PlotBounds::from_min_max(
+                    [*x_range.start(), current_bounds.min()[1]],
+                    [*x_range.end(), current_bounds.max()[1]],
+                ));
                 state.last_bounds = Some(followed);
             }
         } else if zoom_x != 1.0 || zoom_y != 1.0 {
@@ -151,49 +207,25 @@ pub fn render(ui: &mut Ui, buf: &PlotBuffer, session_id: u64, state: &mut PlotVi
 
         for series in buf.iter() {
             let sampled_points = match buf.kind() {
-                PlotSeriesKind::TimeSeries => {
-                    series.render_points_time_series(
-                        current_bounds.min()[0],
-                        current_bounds.max()[0],
-                        max_render_points,
-                    )
-                }
+                PlotSeriesKind::TimeSeries => series.render_points_time_series(
+                    current_bounds.min()[0],
+                    current_bounds.max()[0],
+                    max_render_points,
+                ),
                 PlotSeriesKind::XY => series.render_points_xy(max_render_points),
             };
+            rendered_points += sampled_points.len();
             let points = PlotPoints::from_iter(sampled_points);
             plot_ui.line(Line::new(series.name.clone(), points));
         }
     });
-}
 
-fn plot_bounds(buf: &PlotBuffer) -> Option<PlotBounds> {
-    let mut bounds = PlotBounds::NOTHING;
-
-    for series in buf.iter() {
-        for [x, y] in series.points() {
-            if x.is_finite() && y.is_finite() {
-                bounds.extend_with(&[x, y].into());
-            }
-        }
+    PlotRenderOutput {
+        stats: PlotRenderStats {
+            series_count: buf.series_len(),
+            stored_points: buf.total_points(),
+            rendered_points,
+        },
+        toggle_detached,
     }
-
-    if !bounds.is_finite() {
-        return None;
-    }
-
-    if bounds.width() <= 0.0 {
-        let center_x = bounds.center().x;
-        bounds.set_x_center_width(center_x, 1.0);
-    } else {
-        bounds.expand_x(bounds.width() * 0.05);
-    }
-
-    if bounds.height() <= 0.0 {
-        let center_y = bounds.center().y;
-        bounds.set_y_center_height(center_y, 1.0);
-    } else {
-        bounds.expand_y(bounds.height() * 0.1);
-    }
-
-    Some(bounds)
 }

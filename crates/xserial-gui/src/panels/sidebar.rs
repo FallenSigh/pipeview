@@ -12,6 +12,7 @@ pub fn render(
     sessions: &[SessionListItem],
     active: &mut usize,
     on_new: &mut bool,
+    on_edit: &mut Option<usize>,
     on_delete: &mut Option<usize>,
 ) {
     ui.heading("Sessions");
@@ -37,12 +38,23 @@ pub fn render(
             "{} Session {}\n{}",
             status_tag, session.id, session.transport_summary
         );
-        if ui
-            .selectable_label(*active == i, RichText::new(label).color(color))
-            .clicked()
-        {
-            *active = i;
-        }
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(*active == i, RichText::new(label).color(color))
+                .clicked()
+            {
+                *active = i;
+            }
+
+            if ui
+                .small_button("⚙")
+                .on_hover_text("Edit session config")
+                .clicked()
+            {
+                *active = i;
+                *on_edit = Some(i);
+            }
+        });
     }
 
     ui.separator();

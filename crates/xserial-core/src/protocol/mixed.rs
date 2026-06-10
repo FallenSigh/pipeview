@@ -52,7 +52,8 @@ impl MixedTextPlotDecoder {
             Endian::Big => 1,
         });
         packet.push(channels.min(u8::MAX as usize) as u8);
-        packet.extend_from_slice(&(samples_per_channel.min(u16::MAX as usize) as u16).to_le_bytes());
+        packet
+            .extend_from_slice(&(samples_per_channel.min(u16::MAX as usize) as u16).to_le_bytes());
         packet.extend_from_slice(&(payload.len().min(u32::MAX as usize) as u32).to_le_bytes());
         packet.extend_from_slice(payload);
         packet

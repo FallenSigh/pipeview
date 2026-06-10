@@ -6,8 +6,8 @@ use tokio::time::timeout;
 
 use xserial_core::frame::{
     Endian, Framer,
-    cobs::cobs_encode as raw_cobs_encode,
     cobs::CobsFramer,
+    cobs::cobs_encode as raw_cobs_encode,
     fixed::FixedLengthFramer,
     length::{LengthConfig, LengthPrefixedFramer},
     line::{LineConfig, LineFramer},
@@ -298,10 +298,7 @@ async fn tcp_mixed_text_and_plot_single_stream() {
     conn.disconnect().await.unwrap();
 
     let decoder = MixedTextPlotDecoder::new(MixedTextPlotConfig::default());
-    let results: Vec<DecodedData> = frames
-        .iter()
-        .filter_map(|f| decoder.decode(f))
-        .collect();
+    let results: Vec<DecodedData> = frames.iter().filter_map(|f| decoder.decode(f)).collect();
 
     assert_eq!(results.len(), 3);
     assert!(matches!(&results[0], DecodedData::Text(s) if s == "status ok"));

@@ -258,7 +258,7 @@ def main() -> None:
                                 for index, value in enumerate(values)
                             )
                             line = (
-                                f"time={now - started_at:7.3f}s "
+                                f"测试 time={now - started_at:7.3f}s "
                                 f"sample={sample_index:7d} {joined}\n"
                             )
                             conn.sendall(line.encode("utf-8"))

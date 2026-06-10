@@ -28,6 +28,9 @@ impl<T> RingBuffer<T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.buf.iter()
     }
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.buf.get(index)
+    }
     pub fn clear(&mut self) {
         self.buf.clear();
     }
