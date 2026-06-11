@@ -19,3 +19,6 @@ tracing-appender = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }
 image = { workspace = true }
+mlua = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
