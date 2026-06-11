@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TCP server that sends plot waveform frames for the current xserial GUI."""
+"""TCP server that sends plot waveform frames or text lines for xserial GUI."""
 
 import argparse
 import math
@@ -118,7 +118,7 @@ def is_disconnect_error(err: OSError) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(description="xserial plot test server")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8091)
+    parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--channels", type=int, default=1)
     parser.add_argument(
         "--format",
@@ -148,9 +148,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--wire-format",
-        choices=("mixed", "raw"),
+        choices=("mixed", "raw", "text"),
         default="mixed",
-        help="mixed sends text+plot on one connection; raw sends plot only",
+        help="mixed sends text+plot; raw sends plot only; text sends text only",
     )
     args = parser.parse_args()
 
@@ -193,19 +193,38 @@ def main() -> None:
             values.append(args.amp * math.sin(2 * math.pi * args.freq * t + phase))
         return values
 
+    def build_text_line(started_at: float, now: float, sample_index: int) -> str:
+        values = sample_values(sample_index)
+        joined = ", ".join(
+            f"ch{index + 1}={value:8.3f}" for index, value in enumerate(values)
+        )
+        return (
+            f"测试 time={now - started_at:7.3f}s "
+            f"sample={sample_index:7d} {joined}\n"
+        )
+
     print(f"Listening {args.host}:{args.port} - Ctrl+C to stop")
     print("GUI:")
     print(f"  transport = TCP {args.host}:{args.port}")
     if args.wire_format == "mixed":
         print("  framer    = MixedTextPlot")
         print("  decoder   = MixedTextPlot\n")
-    else:
+    elif args.wire_format == "raw":
         print(f"  framer    = Fixed({frame_bytes})")
         print(
             f"  decoder   = Plot(f32, little-endian, {args.channels} channel, {args.format})\n"
         )
-    print(f"sending {samples_per_channel} samples/frame at {args.rate:.1f} samples/sec")
-    print(f"effective frame rate: {frame_rate:.2f} fps\n")
+    else:
+        print("  framer    = Line")
+        print("  decoder   = Text")
+        print("  lua test  = Lua framer tests/lua_line_framer.lua")
+        print("              Lua decoder tests/lua_text_decoder.lua\n")
+    if args.wire_format == "text":
+        print(f"sending text only at {args.text_interval:.3f}s intervals")
+        print(f"sample clock: {args.rate:.1f} samples/sec\n")
+    else:
+        print(f"sending {samples_per_channel} samples/frame at {args.rate:.1f} samples/sec")
+        print(f"effective frame rate: {frame_rate:.2f} fps\n")
 
     stop_event = threading.Event()
 
@@ -230,6 +249,25 @@ def main() -> None:
                 next_text_at = started_at
                 try:
                     while not stop_event.is_set():
+                        if args.wire_format == "text":
+                            now = time.perf_counter()
+                            wait = next_text_at - now
+                            if wait > 0:
+                                time.sleep(min(wait, 0.1))
+                                continue
+
+                            sample_index = int((now - started_at) * args.rate)
+                            conn.sendall(
+                                build_text_line(
+                                    started_at,
+                                    now,
+                                    sample_index,
+                                ).encode("utf-8")
+                            )
+                            text_count += 1
+                            next_text_at += args.text_interval
+                            continue
+
                         plot_payload = build_frame(
                             sample_index=sample_index,
                             channels=args.channels,
@@ -252,16 +290,13 @@ def main() -> None:
 
                         now = time.perf_counter()
                         if args.wire_format == "mixed" and now >= next_text_at:
-                            values = sample_values(sample_index)
-                            joined = ", ".join(
-                                f"ch{index + 1}={value:8.3f}"
-                                for index, value in enumerate(values)
+                            conn.sendall(
+                                build_text_line(
+                                    started_at,
+                                    now,
+                                    sample_index,
+                                ).encode("utf-8")
                             )
-                            line = (
-                                f"测试 time={now - started_at:7.3f}s "
-                                f"sample={sample_index:7d} {joined}\n"
-                            )
-                            conn.sendall(line.encode("utf-8"))
                             text_count += 1
                             next_text_at += args.text_interval
 
@@ -275,10 +310,13 @@ def main() -> None:
                 except OSError as err:
                     if not is_disconnect_error(err):
                         raise
-                    print(
-                        f"[conn -] {addr} "
-                        f"({frame_count} plot frames, {text_count} text lines)"
-                    )
+                    if args.wire_format == "text":
+                        print(f"[conn -] {addr} ({text_count} text lines)")
+                    else:
+                        print(
+                            f"[conn -] {addr} "
+                            f"({frame_count} plot frames, {text_count} text lines)"
+                        )
                 finally:
                     conn.close()
         finally:

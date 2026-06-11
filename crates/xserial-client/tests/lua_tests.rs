@@ -1,5 +1,6 @@
 use std::sync::Once;
 use std::time::Duration;
+use std::{fs, path::PathBuf};
 
 use mlua::Lua;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -14,6 +15,16 @@ fn init_tracing() {
             .try_init()
             .ok();
     });
+}
+
+fn write_temp_lua(name: &str, script: &str) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("xserial_{name}_{nonce}.lua"));
+    fs::write(&path, script).unwrap();
+    path
 }
 
 fn text_pipeline_lua() -> &'static str {
@@ -188,6 +199,102 @@ async fn lua_session_hex_decoder() {
 
     lua.load(&script).exec_async().await.unwrap();
     server.await.unwrap();
+}
+
+// ── xserial.open with Lua framer + Lua decoder ───────────────────
+
+#[tokio::test]
+async fn lua_session_custom_lua_pipeline() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    let framer_path = write_temp_lua(
+        "custom_framer",
+        r#"
+        local buffer = ""
+        return {
+            feed = function(bytes)
+                buffer = buffer .. bytes
+                local frames = {}
+                while true do
+                    local i = buffer:find("|", 1, true)
+                    if not i then break end
+                    frames[#frames + 1] = buffer:sub(1, i - 1)
+                    buffer = buffer:sub(i + 1)
+                end
+                return frames
+            end,
+            flush = function()
+                if #buffer == 0 then return nil end
+                local frame = buffer
+                buffer = ""
+                return frame
+            end,
+            reset = function()
+                buffer = ""
+            end,
+            pending_len = function()
+                return #buffer
+            end,
+        }
+        "#,
+    );
+    let decoder_path = write_temp_lua(
+        "custom_decoder",
+        r#"
+        return {
+            decode = function(frame)
+                return { kind = "text", data = string.upper(frame) }
+            end,
+        }
+        "#,
+    );
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        stream.write_all(b"alpha|").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        stream.write_all(b"beta|").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    });
+
+    let lua = Lua::new();
+    xserial_client::lua::register(&lua).unwrap();
+
+    let script = format!(
+        r#"
+        local sess = xserial.open({{
+            transport = {{ Tcp = {{ addr = "{}" }} }},
+            pipelines = {{
+                {{
+                    name = "custom",
+                    framer = {{ Lua = {{ script_path = [[{}]] }} }},
+                    decoder = {{ Lua = {{ script_path = [[{}]] }} }}
+                }}
+            }}
+        }})
+
+        local r1 = sess:read(5000)
+        assert(r1 ~= nil, "expected first custom frame")
+        assert(r1.pipeline == "custom", "expected custom pipeline, got " .. tostring(r1.pipeline))
+        assert(r1.kind == "text", "expected text kind, got " .. tostring(r1.kind))
+        assert(r1.data == "ALPHA", "expected ALPHA, got " .. tostring(r1.data))
+
+        local r2 = sess:read(5000)
+        assert(r2 ~= nil, "expected second custom frame")
+        assert(r2.data == "BETA", "expected BETA, got " .. tostring(r2.data))
+
+        sess:close()
+        "#,
+        addr,
+        framer_path.display(),
+        decoder_path.display()
+    );
+
+    lua.load(&script).exec_async().await.unwrap();
+    server.await.unwrap();
+    fs::remove_file(framer_path).unwrap();
+    fs::remove_file(decoder_path).unwrap();
 }
 
 // ── session:on_data callback ─────────────────────────────────────

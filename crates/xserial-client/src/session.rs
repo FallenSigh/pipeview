@@ -206,6 +206,7 @@ pub struct Session {
     config: SessionConfig,
     conn: Option<Connection>,
     pipeline: MultiPipeline,
+    pipeline_build_error: Option<String>,
     history: RingBuffer<DecodedEntry>,
     cmd_rx: mpsc::Receiver<SessionCmd>,
     event_tx: broadcast::Sender<SessionEvent>,
@@ -217,9 +218,17 @@ impl Session {
     pub fn spawn(id: SessionId, config: SessionConfig) -> SessionHandle {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (event_tx, _) = broadcast::channel(256);
+        let (pipeline, pipeline_build_error) = match Self::build_pipeline(&config) {
+            Ok(pipeline) => (pipeline, None),
+            Err(err) => (
+                MultiPipeline::new(),
+                Some(format!("pipeline build failed: {err}")),
+            ),
+        };
         let mut session = Self {
             id,
-            pipeline: Self::build_pipeline(&config),
+            pipeline,
+            pipeline_build_error,
             history: RingBuffer::new(config.history_limit),
             config,
             conn: None,
@@ -233,22 +242,29 @@ impl Session {
         SessionHandle::new(inner)
     }
 
-    fn build_pipeline(config: &SessionConfig) -> MultiPipeline {
+    fn build_pipeline(config: &SessionConfig) -> crate::Result<MultiPipeline> {
         let mut pipelines = MultiPipeline::new();
         for pipeline in &config.pipelines {
             pipelines.add(Pipeline::new(
                 pipeline.name.clone(),
-                pipeline.framer.clone().build(),
-                pipeline.decoder.clone().build(),
+                pipeline.framer.clone().build()?,
+                pipeline.decoder.clone().build()?,
             ));
         }
-        pipelines
+        Ok(pipelines)
     }
 
     async fn run(&mut self) {
         info!(session_id = self.id, "session started");
 
-        if let Err(err) = self.connect().await {
+        if let Some(message) = self.pipeline_build_error.take() {
+            self.emit_error(message);
+            self.desired_connected = false;
+        }
+
+        if self.desired_connected
+            && let Err(err) = self.connect().await
+        {
             warn!(session_id = self.id, error = %err, "initial connect failed");
             self.emit_error(format!("connect failed: {err}"));
         }
@@ -346,9 +362,16 @@ impl Session {
 
     async fn handle_reconfigure(&mut self, config: SessionConfig) {
         info!(session_id = self.id, "reconfiguring session");
+        let pipeline = match Self::build_pipeline(&config) {
+            Ok(pipeline) => pipeline,
+            Err(err) => {
+                self.emit_error(format!("pipeline build failed: {err}"));
+                return;
+            }
+        };
         self.disconnect(true).await;
         self.config = config;
-        self.pipeline = Self::build_pipeline(&self.config);
+        self.pipeline = pipeline;
         self.history = RingBuffer::new(self.config.history_limit);
 
         if let Err(err) = self.connect().await {

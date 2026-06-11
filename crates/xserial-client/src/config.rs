@@ -16,6 +16,9 @@ use xserial_core::protocol::{
 };
 use xserial_core::transport::TransportConfig;
 
+use crate::error::Result;
+use crate::lua::codec::{LuaDecoder, LuaFramer};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FramerConfig {
     Line {
@@ -49,6 +52,9 @@ pub enum FramerConfig {
         #[serde(default = "default_max_frame")]
         max_plot_frame: usize,
     },
+    Lua {
+        script_path: String,
+    },
 }
 
 fn default_true() -> bool {
@@ -68,15 +74,15 @@ fn default_max_frame() -> usize {
 }
 
 impl FramerConfig {
-    pub fn build(self) -> Box<dyn Framer> {
-        match self {
+    pub fn build(self) -> Result<Box<dyn Framer>> {
+        Ok(match self {
             FramerConfig::Line {
                 strip_cr,
                 max_line_len,
             } => Box::new(LineFramer::new(LineConfig {
                 strip_cr,
                 max_line_len,
-            })),
+            })) as Box<dyn Framer>,
             FramerConfig::Fixed { frame_len } => Box::new(FixedLengthFramer::new(frame_len)),
             FramerConfig::Length {
                 len_bytes,
@@ -99,7 +105,10 @@ impl FramerConfig {
                 max_line_len,
                 max_plot_frame,
             })),
-        }
+            FramerConfig::Lua { script_path } => {
+                Box::new(LuaFramer::from_script_path(script_path)?)
+            }
+        })
     }
 }
 
@@ -132,6 +141,9 @@ pub enum DecoderConfig {
         #[serde(default)]
         encoding: TextEncoding,
     },
+    Lua {
+        script_path: String,
+    },
 }
 
 fn default_sep() -> String {
@@ -142,9 +154,11 @@ fn default_one() -> usize {
 }
 
 impl DecoderConfig {
-    pub fn build(self) -> Box<dyn ProtocolDecoder> {
-        match self {
-            DecoderConfig::Text { encoding } => Box::new(TextDecoder::new(encoding)),
+    pub fn build(self) -> Result<Box<dyn ProtocolDecoder>> {
+        Ok(match self {
+            DecoderConfig::Text { encoding } => {
+                Box::new(TextDecoder::new(encoding)) as Box<dyn ProtocolDecoder>
+            }
             DecoderConfig::Hex {
                 uppercase,
                 separator,
@@ -170,7 +184,10 @@ impl DecoderConfig {
             DecoderConfig::MixedTextPlot { encoding } => {
                 Box::new(MixedTextPlotDecoder::new(MixedDecoderConfig { encoding }))
             }
-        }
+            DecoderConfig::Lua { script_path } => {
+                Box::new(LuaDecoder::from_script_path(script_path)?)
+            }
+        })
     }
 }
 
@@ -286,6 +303,16 @@ mod tests {
     }
 
     #[test]
+    fn framer_lua_serde() {
+        let cfg: FramerConfig =
+            serde_json::from_str(r#"{"Lua":{"script_path":"/tmp/framer.lua"}}"#).unwrap();
+        match cfg {
+            FramerConfig::Lua { script_path } => assert_eq!(script_path, "/tmp/framer.lua"),
+            _ => panic!("expected Lua"),
+        }
+    }
+
+    #[test]
     fn decoder_text_serde() {
         let cfg: DecoderConfig = serde_json::from_str(r#"{"Text":{"encoding":"Latin1"}}"#).unwrap();
         match cfg {
@@ -346,6 +373,16 @@ mod tests {
     }
 
     #[test]
+    fn decoder_lua_serde() {
+        let cfg: DecoderConfig =
+            serde_json::from_str(r#"{"Lua":{"script_path":"/tmp/decoder.lua"}}"#).unwrap();
+        match cfg {
+            DecoderConfig::Lua { script_path } => assert_eq!(script_path, "/tmp/decoder.lua"),
+            _ => panic!("expected Lua"),
+        }
+    }
+
+    #[test]
     fn session_config_full_roundtrip() {
         let json = r#"{
             "transport":{"Tcp":{"addr":"192.168.1.1:9999"}},
@@ -388,7 +425,7 @@ mod tests {
                 max_plot_frame: 1024,
             },
         ] {
-            let f = cfg.build();
+            let f = cfg.build().unwrap();
             assert_eq!(f.pending_len(), 0);
         }
     }
@@ -400,6 +437,7 @@ mod tests {
                 encoding: TextEncoding::Utf8
             }
             .build()
+            .unwrap()
             .name(),
             "Text"
         );
@@ -411,6 +449,7 @@ mod tests {
                 endian: Endian::Big
             }
             .build()
+            .unwrap()
             .name(),
             "Hex"
         );
@@ -422,6 +461,7 @@ mod tests {
                 format: PlotFormat::XY
             }
             .build()
+            .unwrap()
             .name(),
             "Plot"
         );
@@ -430,6 +470,7 @@ mod tests {
                 encoding: TextEncoding::Utf8
             }
             .build()
+            .unwrap()
             .name(),
             "MixedTextPlot"
         );

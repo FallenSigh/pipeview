@@ -6,6 +6,7 @@ use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Table, Value};
 use crate::config::SessionConfig;
 use crate::manager::SessionManager;
 
+pub(crate) mod codec;
 mod session_api;
 
 #[derive(Clone)]

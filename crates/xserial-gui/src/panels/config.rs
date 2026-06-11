@@ -1,12 +1,12 @@
 use egui::{ComboBox, DragValue, ScrollArea, TextEdit, Ui};
 use xserial_client::config::{DecoderConfig, FramerConfig, PipelineConfig, SessionConfig};
-use xserial_core::protocol::Endian;
 use xserial_core::protocol::plot::{PlotFormat, SampleType};
 use xserial_core::protocol::text::TextEncoding;
-use xserial_core::transport::TransportConfig;
+use xserial_core::protocol::Endian;
 use xserial_core::transport::serial::{
     SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits, SerialTransport,
 };
+use xserial_core::transport::TransportConfig;
 
 #[derive(Clone)]
 pub struct ConfigForm {
@@ -44,6 +44,7 @@ pub struct PipelineForm {
     pub mixed_strip_cr: bool,
     pub mixed_max_line_len: usize,
     pub mixed_max_plot_frame: usize,
+    pub lua_framer_script_path: String,
     pub hex_uppercase: bool,
     pub hex_separator: String,
     pub hex_bytes_per_group: usize,
@@ -52,6 +53,7 @@ pub struct PipelineForm {
     pub plot_channels: usize,
     pub plot_endian: Endian,
     pub plot_format: PlotFormat,
+    pub lua_decoder_script_path: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,6 +70,7 @@ pub enum FramerChoice {
     Length,
     Cobs,
     MixedTextPlot,
+    Lua,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -76,6 +79,7 @@ pub enum DecoderChoice {
     Hex,
     Plot,
     MixedTextPlot,
+    Lua,
 }
 
 impl PipelineForm {
@@ -96,6 +100,7 @@ impl PipelineForm {
             mixed_strip_cr: true,
             mixed_max_line_len: 1_048_576,
             mixed_max_plot_frame: 1_048_576,
+            lua_framer_script_path: String::new(),
             hex_uppercase: false,
             hex_separator: String::from(" "),
             hex_bytes_per_group: 1,
@@ -104,6 +109,7 @@ impl PipelineForm {
             plot_channels: 1,
             plot_endian: Endian::Little,
             plot_format: PlotFormat::Interleaved,
+            lua_decoder_script_path: String::new(),
         }
     }
 }
@@ -271,6 +277,10 @@ impl PipelineForm {
                 form.mixed_max_line_len = *max_line_len;
                 form.mixed_max_plot_frame = *max_plot_frame;
             }
+            FramerConfig::Lua { script_path } => {
+                form.framer = FramerChoice::Lua;
+                form.lua_framer_script_path = script_path.clone();
+            }
         }
 
         match &config.decoder {
@@ -306,6 +316,10 @@ impl PipelineForm {
                 form.decoder = DecoderChoice::MixedTextPlot;
                 form.text_encoding = *encoding;
             }
+            DecoderConfig::Lua { script_path } => {
+                form.decoder = DecoderChoice::Lua;
+                form.lua_decoder_script_path = script_path.clone();
+            }
         }
 
         form
@@ -336,6 +350,9 @@ impl PipelineForm {
                     max_line_len: self.mixed_max_line_len,
                     max_plot_frame: self.mixed_max_plot_frame,
                 },
+                FramerChoice::Lua => FramerConfig::Lua {
+                    script_path: self.lua_framer_script_path.clone(),
+                },
             },
             decoder: match self.decoder {
                 DecoderChoice::Text => DecoderConfig::Text {
@@ -355,6 +372,9 @@ impl PipelineForm {
                 },
                 DecoderChoice::MixedTextPlot => DecoderConfig::MixedTextPlot {
                     encoding: self.text_encoding,
+                },
+                DecoderChoice::Lua => DecoderConfig::Lua {
+                    script_path: self.lua_decoder_script_path.clone(),
                 },
             },
         }
@@ -592,12 +612,14 @@ fn render_pipeline_header(
                 FramerChoice::Length => "Length",
                 FramerChoice::Cobs => "Cobs",
                 FramerChoice::MixedTextPlot => "MixedTextPlot",
+                FramerChoice::Lua => "Lua",
             })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut pipeline.framer, FramerChoice::Line, "Line");
                 ui.selectable_value(&mut pipeline.framer, FramerChoice::Fixed, "Fixed");
                 ui.selectable_value(&mut pipeline.framer, FramerChoice::Length, "Length");
                 ui.selectable_value(&mut pipeline.framer, FramerChoice::Cobs, "Cobs");
+                ui.selectable_value(&mut pipeline.framer, FramerChoice::Lua, "Lua");
                 if ui
                     .selectable_label(
                         matches!(pipeline.framer, FramerChoice::MixedTextPlot),
@@ -616,10 +638,12 @@ fn render_pipeline_header(
                 DecoderChoice::Hex => "Hex",
                 DecoderChoice::Plot => "Plot",
                 DecoderChoice::MixedTextPlot => "MixedTextPlot",
+                DecoderChoice::Lua => "Lua",
             })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut pipeline.decoder, DecoderChoice::Text, "Text");
                 ui.selectable_value(&mut pipeline.decoder, DecoderChoice::Hex, "Hex");
+                ui.selectable_value(&mut pipeline.decoder, DecoderChoice::Lua, "Lua");
                 if ui
                     .selectable_label(matches!(pipeline.decoder, DecoderChoice::Plot), "Plot")
                     .clicked()
@@ -710,6 +734,14 @@ fn render_framer_settings(ui: &mut Ui, pipeline: &mut PipelineForm, index: usize
                 ui.add(DragValue::new(&mut pipeline.mixed_max_plot_frame).range(1..=16_777_216));
             });
         }
+        FramerChoice::Lua => {
+            ui.horizontal(|ui| {
+                ui.label("Script:");
+                ui.add(
+                    TextEdit::singleline(&mut pipeline.lua_framer_script_path).desired_width(260.0),
+                );
+            });
+        }
     }
 }
 
@@ -789,6 +821,15 @@ fn render_decoder_settings(ui: &mut Ui, pipeline: &mut PipelineForm, index: usiz
                 "Plot sample type, endian, format, and channels come from the mixed packet header.",
             );
         }
+        DecoderChoice::Lua => {
+            ui.horizontal(|ui| {
+                ui.label("Script:");
+                ui.add(
+                    TextEdit::singleline(&mut pipeline.lua_decoder_script_path)
+                        .desired_width(260.0),
+                );
+            });
+        }
     }
 }
 
@@ -849,6 +890,18 @@ fn validate_pipeline(ui: &mut Ui, pipeline: &PipelineForm, errors: &mut Vec<Stri
         && !matches!(pipeline.length_len_bytes, 1 | 2 | 4)
     {
         push_error(String::from("Length framer len_bytes must be 1, 2, or 4"));
+    }
+
+    if matches!(pipeline.framer, FramerChoice::Lua)
+        && pipeline.lua_framer_script_path.trim().is_empty()
+    {
+        push_error(String::from("Lua framer script path is required"));
+    }
+
+    if matches!(pipeline.decoder, DecoderChoice::Lua)
+        && pipeline.lua_decoder_script_path.trim().is_empty()
+    {
+        push_error(String::from("Lua decoder script path is required"));
     }
 }
 
@@ -947,6 +1000,15 @@ mod tests {
                         endian: Endian::Big,
                         channels: 3,
                         format: PlotFormat::Block,
+                    },
+                },
+                PipelineConfig {
+                    name: String::from("lua"),
+                    framer: FramerConfig::Lua {
+                        script_path: String::from("/tmp/framer.lua"),
+                    },
+                    decoder: DecoderConfig::Lua {
+                        script_path: String::from("/tmp/decoder.lua"),
                     },
                 },
             ],
