@@ -3,6 +3,7 @@ mod app_state;
 mod buffers;
 mod panels;
 mod perf;
+mod shortcuts;
 mod ui_fonts;
 
 use xserial_client::SessionManager;

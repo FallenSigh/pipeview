@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use crate::buffers::{HexBuffer, PlotBuffer, TextBuffer};
 use crate::panels::{config, console, hex_view, plot_view, sidebar};
 use crate::perf::{DrainStats, GuiProfiler, GuiSnapshot};
+use crate::shortcuts::{self, default_bindings};
 use crate::ui_fonts::{self, FontCandidate, FontChoice, UiFontSettings};
 use egui::{Color32, Layout, Panel, Pos2, Rect, TextEdit, UiBuilder};
 use xserial_client::SessionManager;
@@ -92,6 +93,7 @@ pub struct XserialApp {
     event_rx: mpsc::Receiver<SessionEvent>,
     pending: Vec<SessionEvent>,
     profiler: GuiProfiler,
+    shortcut_bindings: Vec<(shortcuts::Action, egui::KeyboardShortcut)>,
 }
 
 impl XserialApp {
@@ -162,9 +164,103 @@ impl XserialApp {
             event_rx,
             pending: Vec::new(),
             profiler,
+            shortcut_bindings: default_bindings(),
         };
         app.restore_saved_sessions(saved_state);
         app
+    }
+
+    fn execute(&mut self, action: shortcuts::Action) {
+        use shortcuts::Action::*;
+
+        match action {
+            NextTab => {
+                if self.tabs.len() > 1 {
+                    self.active = (self.active + 1) % self.tabs.len();
+                    self.persist_gui_state();
+                }
+            }
+            PrevTab => {
+                if self.tabs.len() > 1 {
+                    self.active = if self.active == 0 {
+                        self.tabs.len() - 1
+                    } else {
+                        self.active - 1
+                    };
+                    self.persist_gui_state();
+                }
+            }
+            ViewText => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.view = View::Text;
+                }
+            }
+            ViewHex => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.view = View::Hex;
+                }
+            }
+            ViewPlot => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.view = View::Plot;
+                }
+            }
+            NewSession => self.open_create_config(),
+            EditSession => {
+                if let Some(tab) = self.tabs.get(self.active) {
+                    self.open_edit_config(tab.id);
+                }
+            }
+            DeleteSession => {
+                if !self.tabs.is_empty() {
+                    let id = self.tabs[self.active].id;
+                    self.manager.remove(id);
+                    self.tabs.remove(self.active);
+                    if self.active >= self.tabs.len() && !self.tabs.is_empty() {
+                        self.active = self.tabs.len() - 1;
+                    }
+                    self.persist_gui_state();
+                }
+            }
+            ToggleConnect => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    let connected = matches!(
+                        tab.status,
+                        ConnectionStatus::Connected | ConnectionStatus::Connecting
+                    );
+                    if let Some(handle) = self.manager.get(tab.id) {
+                        if connected {
+                            tab.status = ConnectionStatus::Disconnected;
+                            let handle = handle.clone();
+                            tokio::spawn(async move {
+                                let _ = handle.disconnect().await;
+                            });
+                        } else {
+                            tab.status = ConnectionStatus::Connecting;
+                            let handle = handle.clone();
+                            tokio::spawn(async move {
+                                let _ = handle.connect().await;
+                            });
+                        }
+                    } else {
+                        tab.status = ConnectionStatus::Error(String::from("session not found"));
+                    }
+                }
+            }
+            Clear => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.console.clear();
+                    tab.hex.clear();
+                    tab.plot.clear();
+                    tab.send_status = Some(String::from("Cleared"));
+                }
+            }
+            UiSettings => self.font_settings_open = true,
+            CloseOverlay => {
+                self.config_open = false;
+                self.font_settings_open = false;
+            }
+        }
     }
 
     fn open_create_config(&mut self) {
@@ -851,6 +947,15 @@ impl eframe::App for XserialApp {
     fn update(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {}
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        {
+            let supress = ui.ctx().egui_wants_keyboard_input();
+            let actions = shortcuts::process(ui.ctx(), supress, &self.shortcut_bindings);
+
+            for action in actions {
+                self.execute(action);
+            }
+        }
+
         let frame_started = Instant::now();
         self.drain_events();
         if self.wants_live_plot_repaint() {
@@ -1092,8 +1197,8 @@ mod tests {
                 parity: SerialParity::None,
                 stop_bits: SerialStopBits::One,
                 flow_control: SerialFlowControl::None,
-            dtr: false,
-            rts: false,
+                dtr: false,
+                rts: false,
             }),
             "Serial COM7"
         );

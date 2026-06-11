@@ -1,12 +1,12 @@
 use egui::{ComboBox, DragValue, ScrollArea, TextEdit, Ui};
 use xserial_client::config::{DecoderConfig, FramerConfig, PipelineConfig, SessionConfig};
+use xserial_core::protocol::Endian;
 use xserial_core::protocol::plot::{PlotFormat, SampleType};
 use xserial_core::protocol::text::TextEncoding;
-use xserial_core::protocol::Endian;
+use xserial_core::transport::TransportConfig;
 use xserial_core::transport::serial::{
     SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits, SerialTransport,
 };
-use xserial_core::transport::TransportConfig;
 
 #[derive(Clone)]
 pub struct ConfigForm {
