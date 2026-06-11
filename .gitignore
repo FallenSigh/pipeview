@@ -1,1 +1,5 @@
 /target
+
+# Compiled binaries in tools/
+tools/test_plot_c
+tools/test_text_c

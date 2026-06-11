@@ -547,7 +547,7 @@ fn render_serial_port_combo(ui: &mut Ui, form: &mut ConfigForm) {
     ui.horizontal(|ui| {
         ui.label("Port:");
         ComboBox::from_id_salt("serial_port")
-            .width(220.0)
+            .width(180.0)
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
                 if available_ports.is_empty() {
@@ -570,6 +570,7 @@ fn render_serial_port_combo(ui: &mut Ui, form: &mut ConfigForm) {
                     );
                 }
             });
+        ui.add(TextEdit::singleline(&mut form.port).desired_width(260.0));
     });
 }
 
