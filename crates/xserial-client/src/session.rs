@@ -138,6 +138,22 @@ impl SessionHandle {
             .map_err(|_| String::from("session closed"))
     }
 
+    pub async fn set_dtr(&self, state: bool) -> Result<(), String> {
+        self.inner
+            .cmd_tx
+            .send(SessionCmd::SetDtr(state))
+            .await
+            .map_err(|_| String::from("session closed"))
+    }
+
+    pub async fn set_rts(&self, state: bool) -> Result<(), String> {
+        self.inner
+            .cmd_tx
+            .send(SessionCmd::SetRts(state))
+            .await
+            .map_err(|_| String::from("session closed"))
+    }
+
     pub async fn read(&self, timeout_ms: u64) -> Option<DecodedEntry> {
         let mut rx = self.inner.event_tx.subscribe();
         let deadline = Duration::from_millis(timeout_ms);
@@ -304,6 +320,14 @@ impl Session {
                 self.handle_reconfigure(config).await;
                 true
             }
+            Some(SessionCmd::SetDtr(state)) => {
+                self.handle_set_dtr(state);
+                true
+            }
+            Some(SessionCmd::SetRts(state)) => {
+                self.handle_set_rts(state);
+                true
+            }
             None => false,
         }
     }
@@ -329,6 +353,28 @@ impl Session {
 
         if let Err(err) = self.connect().await {
             self.emit_error(format!("reconnect: {err}"));
+        }
+    }
+
+    fn handle_set_dtr(&mut self, state: bool) {
+        match self.conn.as_mut() {
+            Some(conn) => {
+                if let Err(err) = conn.set_dtr(state) {
+                    self.emit_error(format!("set_dtr: {err}"));
+                }
+            }
+            None => self.emit_error(String::from("set_dtr: session not connected")),
+        }
+    }
+
+    fn handle_set_rts(&mut self, state: bool) {
+        match self.conn.as_mut() {
+            Some(conn) => {
+                if let Err(err) = conn.set_rts(state) {
+                    self.emit_error(format!("set_rts: {err}"));
+                }
+            }
+            None => self.emit_error(String::from("set_rts: session not connected")),
         }
     }
 

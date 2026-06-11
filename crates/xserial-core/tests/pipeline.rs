@@ -688,6 +688,8 @@ async fn connection_transport_type_dispatch() {
         parity: SerialParity::None,
         stop_bits: SerialStopBits::One,
         flow_control: SerialFlowControl::None,
+            dtr: false,
+            rts: false,
     });
     let tcp = Connection::new(TransportConfig::Tcp {
         addr: "127.0.0.1:8080".into(),

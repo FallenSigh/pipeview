@@ -8,4 +8,6 @@ pub enum SessionCmd {
     SetAutoReconnect(bool),
     Close,
     Reconfigure(SessionConfig),
+    SetDtr(bool),
+    SetRts(bool),
 }

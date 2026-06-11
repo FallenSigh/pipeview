@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, SerialStream, StopBits};
+use serialport::SerialPort;
 use tracing::{debug, info, warn};
 
 use super::{Transport, TransportType};
@@ -83,9 +84,12 @@ pub struct SerialTransport {
     parity: SerialParity,
     stop_bits: SerialStopBits,
     flow_control: SerialFlowControl,
+    dtr: bool,
+    rts: bool,
 }
 
 impl SerialTransport {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         port_name: String,
         baud_rate: u32,
@@ -93,6 +97,8 @@ impl SerialTransport {
         parity: SerialParity,
         stop_bits: SerialStopBits,
         flow_control: SerialFlowControl,
+        dtr: bool,
+        rts: bool,
     ) -> Self {
         Self {
             port: None,
@@ -102,6 +108,8 @@ impl SerialTransport {
             parity,
             stop_bits,
             flow_control,
+            dtr,
+            rts,
         }
     }
 
@@ -137,6 +145,36 @@ impl SerialTransport {
 
     pub fn flow_control(&self) -> SerialFlowControl {
         self.flow_control
+    }
+
+    pub fn set_dtr(&mut self, state: bool) -> Result<()> {
+        match &mut self.port {
+            Some(port) => {
+                port.write_data_terminal_ready(state)?;
+                self.dtr = state;
+                debug!("DTR set to {} on {}", state, self.port_name);
+                Ok(())
+            }
+            None => Err(crate::error::Error::ConnectionFailed(format!(
+                "port {} not open",
+                self.port_name
+            ))),
+        }
+    }
+
+    pub fn set_rts(&mut self, state: bool) -> Result<()> {
+        match &mut self.port {
+            Some(port) => {
+                port.write_request_to_send(state)?;
+                self.rts = state;
+                debug!("RTS set to {} on {}", state, self.port_name);
+                Ok(())
+            }
+            None => Err(crate::error::Error::ConnectionFailed(format!(
+                "port {} not open",
+                self.port_name
+            ))),
+        }
     }
 }
 
@@ -221,7 +259,7 @@ impl Transport for SerialTransport {
             self.flow_control
         );
 
-        let port = tokio_serial::new(&self.port_name, self.baud_rate)
+        let mut port = tokio_serial::new(&self.port_name, self.baud_rate)
             .data_bits(self.data_bits.into())
             .parity(self.parity.into())
             .stop_bits(self.stop_bits.into())
@@ -233,6 +271,17 @@ impl Transport for SerialTransport {
                     self.port_name, e
                 ))
             })?;
+
+        // Linux kernel toggles DTR/RTS on every open() — restore configured
+        // state immediately afterward. Many wireless serial modules (HC-12,
+        // HC-15, HC-05, Bluetooth/UART bridges) need DTR asserted to stay in
+        // transparent data mode and not fall into AT-command / reset state.
+        if let Err(e) = port.write_data_terminal_ready(self.dtr) {
+            warn!("Failed to set DTR({}) on {}: {}", self.dtr, self.port_name, e);
+        }
+        if let Err(e) = port.write_request_to_send(self.rts) {
+            warn!("Failed to set RTS({}) on {}: {}", self.rts, self.port_name, e);
+        }
 
         debug!("Serial port {} opened successfully", self.port_name);
         self.port = Some(port);
@@ -282,6 +331,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         assert_eq!(transport.port_name(), "COM1");
         assert_eq!(transport.baud_rate(), 115200);
@@ -296,6 +347,8 @@ mod tests {
             SerialParity::Even,
             SerialStopBits::Two,
             SerialFlowControl::Hardware,
+        true,
+        true,
         );
         assert_eq!(transport.port_name(), "COM3");
         assert_eq!(transport.baud_rate(), 9600);
@@ -314,6 +367,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         assert_eq!(transport.name(), "COM1");
     }
@@ -327,6 +382,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         assert_eq!(transport.transport_type(), TransportType::Serial);
     }
@@ -340,6 +397,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         assert!(!transport.is_connected());
     }
@@ -368,6 +427,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         let pinned = Pin::new(&mut transport);
         let mut buf_data = [0u8; 16];
@@ -391,6 +452,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         let pinned = Pin::new(&mut transport);
         let data = b"hello";
@@ -411,6 +474,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         let pinned = Pin::new(&mut transport);
         let waker = noop_waker();
@@ -430,6 +495,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         let pinned = Pin::new(&mut transport);
         let waker = noop_waker();
@@ -451,6 +518,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         assert_eq!(transport.name(), "COM1");
     }
@@ -464,6 +533,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         assert_eq!(transport.transport_type(), TransportType::Serial);
     }
@@ -477,6 +548,8 @@ mod tests {
             SerialParity::None,
             SerialStopBits::One,
             SerialFlowControl::None,
+        true,
+        true,
         );
         assert!(!transport.is_connected());
     }

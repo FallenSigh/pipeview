@@ -64,6 +64,8 @@ pub struct SessionTab {
     pub plot_view: plot_view::PlotViewState,
     pub view: View,
     pub auto_reconnect: bool,
+    pub dtr: bool,
+    pub rts: bool,
     pub send_input: String,
     pub send_mode: SendMode,
     pub append_newline: bool,
@@ -183,6 +185,10 @@ impl XserialApp {
     fn add_session_tab(&mut self, session_config: SessionConfig) {
         let history_limit = session_config.history_limit;
         let auto_reconnect = session_config.auto_reconnect;
+        let (dtr, rts) = match &session_config.transport {
+            TransportConfig::Serial { dtr, rts, .. } => (*dtr, *rts),
+            _ => (false, false),
+        };
         let handle = self.manager.create(session_config.clone());
         self.tabs.push(SessionTab {
             id: handle.id(),
@@ -194,6 +200,8 @@ impl XserialApp {
             plot_view: plot_view::PlotViewState::default(),
             view: View::Text,
             auto_reconnect,
+            dtr,
+            rts,
             send_input: String::new(),
             send_mode: SendMode::Text,
             append_newline: true,
@@ -920,6 +928,22 @@ fn render_session_controls(
                 tab.status = ConnectionStatus::Error(String::from("session not found"));
             }
         }
+        if matches!(tab.status, ConnectionStatus::Connected) {
+            let dtr_changed = ui.checkbox(&mut tab.dtr, "DTR").changed();
+            let rts_changed = ui.checkbox(&mut tab.rts, "RTS").changed();
+            if dtr_changed || rts_changed {
+                if let Some(handle) = manager.get(tab.id) {
+                    let dtr = tab.dtr;
+                    let rts = tab.rts;
+                    tokio::spawn(async move {
+                        if dtr_changed { let _ = handle.set_dtr(dtr).await; }
+                        if rts_changed { let _ = handle.set_rts(rts).await; }
+                    });
+                } else {
+                    tab.status = ConnectionStatus::Error(String::from("session not found"));
+                }
+            }
+        }
     });
     auto_reconnect_changed
 }
@@ -1062,6 +1086,8 @@ mod tests {
                 parity: SerialParity::None,
                 stop_bits: SerialStopBits::One,
                 flow_control: SerialFlowControl::None,
+            dtr: false,
+            rts: false,
             }),
             "Serial COM7"
         );

@@ -30,6 +30,14 @@ fn default_serial_flow_control() -> SerialFlowControl {
     SerialFlowControl::None
 }
 
+fn default_serial_dtr() -> bool {
+    false
+}
+
+fn default_serial_rts() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransportType {
     Serial,
@@ -60,6 +68,10 @@ pub enum TransportConfig {
         stop_bits: SerialStopBits,
         #[serde(default = "default_serial_flow_control")]
         flow_control: SerialFlowControl,
+        #[serde(default = "default_serial_dtr")]
+        dtr: bool,
+        #[serde(default = "default_serial_rts")]
+        rts: bool,
     },
     Tcp {
         addr: String,
@@ -96,6 +108,8 @@ impl Connection {
                 parity,
                 stop_bits,
                 flow_control,
+                dtr,
+                rts,
             } => Connection::Serial(SerialTransport::new(
                 port,
                 baud_rate,
@@ -103,6 +117,8 @@ impl Connection {
                 parity,
                 stop_bits,
                 flow_control,
+                dtr,
+                rts,
             )),
             TransportConfig::Tcp { addr } => Connection::Tcp(TcpTransport::new(addr)),
             TransportConfig::Udp {
@@ -151,6 +167,28 @@ impl Connection {
             Connection::Serial(t) => t.disconnect().await,
             Connection::Tcp(t) => t.disconnect().await,
             Connection::Udp(t) => t.disconnect().await,
+        }
+    }
+
+    pub fn set_dtr(&mut self, state: bool) -> Result<()> {
+        match self {
+            Connection::Serial(t) => t.set_dtr(state),
+            Connection::Tcp(_) | Connection::Udp(_) => {
+                Err(crate::error::Error::ConnectionFailed(
+                    "DTR only supported on Serial connections".into(),
+                ))
+            }
+        }
+    }
+
+    pub fn set_rts(&mut self, state: bool) -> Result<()> {
+        match self {
+            Connection::Serial(t) => t.set_rts(state),
+            Connection::Tcp(_) | Connection::Udp(_) => {
+                Err(crate::error::Error::ConnectionFailed(
+                    "RTS only supported on Serial connections".into(),
+                ))
+            }
         }
     }
 }
@@ -220,6 +258,8 @@ mod tests {
             parity: SerialParity::None,
             stop_bits: SerialStopBits::One,
             flow_control: SerialFlowControl::None,
+            dtr: false,
+            rts: false,
         }
     }
 
@@ -312,6 +352,8 @@ mod tests {
             parity: SerialParity::None,
             stop_bits: SerialStopBits::One,
             flow_control: SerialFlowControl::None,
+            dtr: false,
+            rts: false,
         };
         let _ = format!("{:?}", cfg);
 
@@ -371,6 +413,8 @@ mod tests {
                 parity,
                 stop_bits,
                 flow_control,
+                dtr,
+                rts,
             } => {
                 assert_eq!(port, "COM1");
                 assert_eq!(baud_rate, 9600);
@@ -378,6 +422,8 @@ mod tests {
                 assert_eq!(parity, SerialParity::None);
                 assert_eq!(stop_bits, SerialStopBits::One);
                 assert_eq!(flow_control, SerialFlowControl::None);
+                assert!(!dtr);
+                assert!(!rts);
             }
             _ => panic!("expected Serial variant"),
         }
@@ -395,6 +441,8 @@ mod tests {
                 parity,
                 stop_bits,
                 flow_control,
+                dtr,
+                rts,
             } => {
                 assert_eq!(port, "COM2");
                 assert_eq!(baud_rate, 57600);
@@ -402,6 +450,8 @@ mod tests {
                 assert_eq!(parity, SerialParity::Even);
                 assert_eq!(stop_bits, SerialStopBits::Two);
                 assert_eq!(flow_control, SerialFlowControl::Hardware);
+                assert!(!dtr);
+                assert!(!rts);
             }
             _ => panic!("expected Serial variant"),
         }

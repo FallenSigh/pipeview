@@ -17,6 +17,8 @@ pub struct ConfigForm {
     pub serial_parity: SerialParity,
     pub serial_stop_bits: SerialStopBits,
     pub serial_flow_control: SerialFlowControl,
+    pub serial_dtr: bool,
+    pub serial_rts: bool,
     pub addr: String,
     pub udp_bind: String,
     pub udp_remote: String,
@@ -116,6 +118,8 @@ impl Default for ConfigForm {
             serial_parity: SerialParity::None,
             serial_stop_bits: SerialStopBits::One,
             serial_flow_control: SerialFlowControl::None,
+            serial_dtr: false,
+            serial_rts: false,
             addr: String::from("127.0.0.1:8080"),
             udp_bind: String::from("0.0.0.0:9000"),
             udp_remote: String::new(),
@@ -158,6 +162,14 @@ impl ConfigForm {
                 TransportConfig::Serial { flow_control, .. } => *flow_control,
                 _ => SerialFlowControl::None,
             },
+            serial_dtr: match &config.transport {
+                TransportConfig::Serial { dtr, .. } => *dtr,
+                _ => false,
+            },
+            serial_rts: match &config.transport {
+                TransportConfig::Serial { rts, .. } => *rts,
+                _ => false,
+            },
             addr: match &config.transport {
                 TransportConfig::Tcp { addr } => addr.clone(),
                 _ => String::from("127.0.0.1:8080"),
@@ -190,6 +202,8 @@ impl ConfigForm {
                     parity: self.serial_parity,
                     stop_bits: self.serial_stop_bits,
                     flow_control: self.serial_flow_control,
+                    dtr: self.serial_dtr,
+                    rts: self.serial_rts,
                 },
                 TransportChoice::Tcp => TransportConfig::Tcp {
                     addr: self.addr.clone(),
@@ -484,6 +498,8 @@ fn render_transport_section(ui: &mut Ui, form: &mut ConfigForm) {
                         );
                     });
             });
+            ui.checkbox(&mut form.serial_dtr, "DTR");
+            ui.checkbox(&mut form.serial_rts, "RTS");
         }
         TransportChoice::Tcp => {
             ui.horizontal(|ui| {
