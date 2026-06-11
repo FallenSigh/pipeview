@@ -67,6 +67,32 @@ impl TextBuffer {
     pub fn set_limit(&mut self, limit: usize) {
         self.lines.set_limit(limit);
     }
+
+    // pub fn iter(&self) -> impl Iterator<Item = &ConsoleLine> {
+    //     (0..self.lines.len()).filter_map(|i| self.lines.get(i))
+    // }
+
+    pub fn search(&self, query: &str, case_sensitive: bool) -> Vec<usize> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let query_lower = if case_sensitive {
+            String::new()
+        } else {
+            query.to_lowercase()
+        };
+        (0..self.lines.len())
+            .filter(|&i| {
+                self.lines.get(i).map_or(false, |line| {
+                    if case_sensitive {
+                        line.text.contains(query)
+                    } else {
+                        line.text.to_lowercase().contains(&query_lower)
+                    }
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone)]
@@ -154,6 +180,33 @@ impl HexBuffer {
 
     pub fn set_limit(&mut self, limit: usize) {
         self.lines.set_limit(limit);
+    }
+
+    // pub fn iter(&self) -> impl Iterator<Item = &HexLine> {
+    //     (0..self.lines.len()).filter_map(|i| self.lines.get(i))
+    // }
+
+    pub fn search(&self, query: &str, case_sensitive: bool) -> Vec<usize> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let query_lower = if case_sensitive {
+            String::new()
+        } else {
+            query.to_lowercase()
+        };
+        (0..self.lines.len())
+            .filter(|&i| {
+                self.lines.get(i).map_or(false, |line| {
+                    if case_sensitive {
+                        line.hex.contains(query) || line.ascii.contains(query)
+                    } else {
+                        line.hex.to_lowercase().contains(&query_lower)
+                            || line.ascii.to_lowercase().contains(&query_lower)
+                    }
+                })
+            })
+            .collect()
     }
 }
 

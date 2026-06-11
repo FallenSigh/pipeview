@@ -1,8 +1,16 @@
-use crate::app::DisplayOptions;
+use crate::app::{DisplayOptions, SearchState};
 use crate::buffers::{HexBuffer, HexLine, LineDirection};
-use egui::{Label, RichText, ScrollArea, TextStyle, TextWrapMode, Ui};
+use egui::{
+    Color32, Label, ScrollArea, TextStyle, TextWrapMode, Ui,
+    text::{LayoutJob, TextFormat},
+};
 
-pub fn render(ui: &mut Ui, buf: &HexBuffer, display: DisplayOptions) -> usize {
+pub fn render(
+    ui: &mut Ui,
+    buf: &HexBuffer,
+    display: DisplayOptions,
+    search: Option<&SearchState>,
+) -> usize {
     let line_count = buf.len();
     if line_count == 0 {
         ui.label("no hex data");
@@ -17,7 +25,7 @@ pub fn render(ui: &mut Ui, buf: &HexBuffer, display: DisplayOptions) -> usize {
             for row in row_range {
                 if let Some(line) = buf.get(row) {
                     ui.add(
-                        Label::new(RichText::new(format_hex_line(line, display)).monospace())
+                        Label::new(format_hex_line(line, display, search, ui.style()))
                             .wrap_mode(TextWrapMode::Extend),
                     );
                 }
@@ -27,7 +35,59 @@ pub fn render(ui: &mut Ui, buf: &HexBuffer, display: DisplayOptions) -> usize {
     line_count
 }
 
-fn format_hex_line(line: &HexLine, display: DisplayOptions) -> String {
+fn highlight_matches(
+    text: &str,
+    query: &str,
+    case_sensitive: bool,
+    default_format: TextFormat,
+    highlight_format: TextFormat,
+) -> LayoutJob {
+    let search_text = if case_sensitive {
+        text.to_string()
+    } else {
+        text.to_lowercase()
+    };
+    let query = if case_sensitive {
+        query.to_string()
+    } else {
+        query.to_lowercase()
+    };
+    let mut job = LayoutJob::default();
+    let mut last_end = 0;
+    let mut idx = 0;
+    while let Some(pos) = search_text[idx..].find(&query) {
+        let start = idx + pos;
+        let end = start + query.len();
+        if last_end < start {
+            job.append(&text[last_end..start], 0.0, default_format.clone());
+        }
+        job.append(&text[start..end], 0.0, highlight_format.clone());
+        last_end = end;
+        idx = end;
+    }
+    if last_end < text.len() {
+        job.append(&text[last_end..], 0.0, default_format);
+    }
+    job
+}
+
+fn monospace_format(style: &egui::Style) -> TextFormat {
+    TextFormat {
+        font_id: style
+            .text_styles
+            .get(&TextStyle::Monospace)
+            .cloned()
+            .unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
+fn format_hex_line(
+    line: &HexLine,
+    display: DisplayOptions,
+    search: Option<&SearchState>,
+    style: &egui::Style,
+) -> LayoutJob {
     let mut prefix = Vec::new();
     if display.show_timestamp {
         let ts = line.elapsed.as_secs_f64();
@@ -53,5 +113,21 @@ fn format_hex_line(line: &HexLine, display: DisplayOptions) -> String {
     } else {
         format!("{} ", prefix.join(" "))
     };
-    format!("{prefix}{}  |{}|", line.hex, line.ascii)
+    let full_text = format!("{prefix}{}  |{}|", line.hex, line.ascii);
+
+    let default = monospace_format(style);
+    let highlight = TextFormat {
+        font_id: default.font_id.clone(),
+        color: Color32::BLACK,
+        background: Color32::from_rgb(255, 255, 0),
+        ..Default::default()
+    };
+
+    match search {
+        Some(state) if state.active && !state.query.is_empty() => {
+            highlight_matches(&full_text, &state.query, state.case_sensitive, default, highlight)
+        }
+        _ => LayoutJob::single_section(full_text, default),
+    }
 }
+

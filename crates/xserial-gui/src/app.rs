@@ -55,6 +55,71 @@ pub struct DisplayOptions {
     pub show_pipeline: bool,
 }
 
+#[derive(Clone)]
+pub struct SearchState {
+    pub query: String,
+    pub matches: Vec<usize>,
+    pub current_match: usize,
+    pub case_sensitive: bool,
+    pub active: bool,
+    pub just_opened: bool,
+}
+
+impl Default for SearchState {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            matches: Vec::new(),
+            current_match: 0,
+            case_sensitive: false,
+            active: false,
+            just_opened: false,
+        }
+    }
+}
+
+impl SearchState {
+    pub fn clear(&mut self) {
+        self.query.clear();
+        self.matches.clear();
+        self.current_match = 0;
+        self.active = false;
+        self.just_opened = false;
+    }
+
+    pub fn next(&mut self) {
+        if !self.matches.is_empty() {
+            self.current_match = (self.current_match + 1) % self.matches.len();
+        }
+    }
+
+    pub fn prev(&mut self) {
+        if !self.matches.is_empty() {
+            self.current_match = if self.current_match == 0 {
+                self.matches.len() - 1
+            } else {
+                self.current_match - 1
+            };
+        }
+    }
+
+    // pub fn current_line_index(&self) -> Option<usize> {
+        // self.matches.get(self.current_match).copied()
+    // }
+
+    pub fn match_count(&self) -> usize {
+        self.matches.len()
+    }
+
+    pub fn current_display(&self) -> usize {
+        if self.matches.is_empty() {
+            0
+        } else {
+            self.current_match + 1
+        }
+    }
+}
+
 pub struct SessionTab {
     pub id: u64,
     pub session_config: SessionConfig,
@@ -71,6 +136,7 @@ pub struct SessionTab {
     pub send_mode: SendMode,
     pub append_newline: bool,
     pub send_status: Option<String>,
+    pub search: SearchState,
 }
 
 pub struct XserialApp {
@@ -260,6 +326,26 @@ impl XserialApp {
                 self.config_open = false;
                 self.font_settings_open = false;
             }
+            Search => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.search.active = true;
+                    tab.search.just_opened = true;
+                }
+            }
+            SearchNext => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    if tab.search.active {
+                        tab.search.next();
+                    }
+                }
+            }
+            SearchPrev => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    if tab.search.active {
+                        tab.search.prev();
+                    }
+                }
+            }
         }
     }
 
@@ -302,6 +388,7 @@ impl XserialApp {
             send_mode: SendMode::Text,
             append_newline: true,
             send_status: None,
+            search: SearchState::default(),
         });
     }
 
@@ -596,6 +683,8 @@ impl XserialApp {
                 });
                 persist_state |= display_changed;
 
+                render_search_bar(ui, tab);
+
                 if let ConnectionStatus::Error(message) = &tab.status {
                     ui.label(egui::RichText::new(message).color(Color32::RED));
                 }
@@ -619,11 +708,11 @@ impl XserialApp {
                         let started = Instant::now();
                         match tab.view {
                             View::Text => {
-                                let line_count = console::render(ui, &tab.console, *display);
+                                let line_count = console::render(ui, &tab.console, *display, tab.search.active.then_some(&tab.search));
                                 text_render = Some((started.elapsed(), line_count));
                             }
                             View::Hex => {
-                                let line_count = hex_view::render(ui, &tab.hex, *display);
+                                let line_count = hex_view::render(ui, &tab.hex, *display, tab.search.active.then_some(&tab.search));
                                 hex_render = Some((started.elapsed(), line_count));
                             }
                             View::Plot => {
@@ -970,6 +1059,62 @@ impl eframe::App for XserialApp {
         self.profiler
             .record_frame(frame_started.elapsed(), self.profiler_snapshot());
     }
+}
+
+fn render_search_bar(ui: &mut egui::Ui, tab: &mut SessionTab) {
+    if !tab.search.active {
+        return;
+    }
+    ui.horizontal(|ui| {
+        let response = ui.add(
+            TextEdit::singleline(&mut tab.search.query)
+                .hint_text("Search...")
+                .desired_width(200.0),
+        );
+        if tab.search.just_opened {
+            response.request_focus();
+            tab.search.just_opened = false;
+        }
+        if response.changed() {
+            let matches = match tab.view {
+                View::Text => tab.console.search(&tab.search.query, tab.search.case_sensitive),
+                View::Hex => tab.hex.search(&tab.search.query, tab.search.case_sensitive),
+                View::Plot => Vec::new(),
+            };
+            tab.search.matches = matches;
+            tab.search.current_match = 0;
+        }
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            tab.search.next();
+        }
+
+        ui.label(format!(
+            "{}/{}",
+            tab.search.current_display(),
+            tab.search.match_count()
+        ));
+
+        if ui.button("▲").clicked() {
+            tab.search.prev();
+        }
+        if ui.button("▼").clicked() {
+            tab.search.next();
+        }
+
+        if ui.checkbox(&mut tab.search.case_sensitive, "Aa").changed() {
+            let matches = match tab.view {
+                View::Text => tab.console.search(&tab.search.query, tab.search.case_sensitive),
+                View::Hex => tab.hex.search(&tab.search.query, tab.search.case_sensitive),
+                View::Plot => Vec::new(),
+            };
+            tab.search.matches = matches;
+            tab.search.current_match = 0;
+        }
+
+        if ui.button("✕").clicked() {
+            tab.search.clear();
+        }
+    });
 }
 
 fn render_session_controls(

@@ -17,6 +17,10 @@ pub enum Action {
 
     UiSettings,
     CloseOverlay,
+
+    Search,
+    SearchNext,
+    SearchPrev,
 }
 
 pub fn default_bindings() -> Vec<(Action, KeyboardShortcut)> {
@@ -49,6 +53,12 @@ pub fn default_bindings() -> Vec<(Action, KeyboardShortcut)> {
         (
             CloseOverlay,
             KeyboardShortcut::new(Modifiers::NONE, Key::Escape),
+        ),
+        (Search, KeyboardShortcut::new(Modifiers::CTRL, Key::F)),
+        (SearchNext, KeyboardShortcut::new(Modifiers::NONE, Key::F3)),
+        (
+            SearchPrev,
+            KeyboardShortcut::new(Modifiers::SHIFT, Key::F3),
         ),
     ]
 }
@@ -122,6 +132,9 @@ mod tests {
             Action::ToggleConnect,
             Action::Clear,
             Action::UiSettings,
+            Action::Search,
+            Action::SearchNext,
+            Action::SearchPrev,
         ] {
             assert!(is_char_based(action), "{action:?} should be char-based");
         }
