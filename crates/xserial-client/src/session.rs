@@ -576,6 +576,7 @@ mod tests {
         let handle = Session::spawn(2, tcp_config());
         tokio::time::sleep(Duration::from_millis(200)).await;
         let _ = handle.send(b"data".to_vec()).await;
+        let _ = handle.close().await;
         handle.join().await;
     }
 
