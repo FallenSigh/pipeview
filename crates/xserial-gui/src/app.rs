@@ -48,6 +48,25 @@ pub enum SendMode {
     Hex,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum LineEnding {
+    None,
+    LF,
+    CR,
+    CRLF,
+}
+
+impl std::fmt::Display for LineEnding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "None"),
+            Self::LF => write!(f, "LF (\\n)"),
+            Self::CR => write!(f, "CR (\\r)"),
+            Self::CRLF => write!(f, "CRLF (\\r\\n)"),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct DisplayOptions {
     pub show_timestamp: bool,
@@ -134,7 +153,7 @@ pub struct SessionTab {
     pub rts: bool,
     pub send_input: String,
     pub send_mode: SendMode,
-    pub append_newline: bool,
+    pub line_ending: LineEnding,
     pub send_status: Option<String>,
     pub search: SearchState,
 }
@@ -386,7 +405,7 @@ impl XserialApp {
             rts,
             send_input: String::new(),
             send_mode: SendMode::Text,
-            append_newline: true,
+            line_ending: LineEnding::None,
             send_status: None,
             search: SearchState::default(),
         });
@@ -1211,7 +1230,31 @@ fn render_send_panel(ui: &mut egui::Ui, manager: &SessionManager, tab: &mut Sess
         ui.selectable_value(&mut tab.send_mode, SendMode::Text, "Text");
         ui.selectable_value(&mut tab.send_mode, SendMode::Hex, "Hex");
         if tab.send_mode == SendMode::Text {
-            ui.checkbox(&mut tab.append_newline, "Append newline");
+            ui.add_space(6.0);
+            egui::ComboBox::from_label("Line ending")
+                .selected_text(tab.line_ending.to_string())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut tab.line_ending,
+                        LineEnding::None,
+                        LineEnding::None.to_string(),
+                    );
+                    ui.selectable_value(
+                        &mut tab.line_ending,
+                        LineEnding::LF,
+                        LineEnding::LF.to_string(),
+                    );
+                    ui.selectable_value(
+                        &mut tab.line_ending,
+                        LineEnding::CR,
+                        LineEnding::CR.to_string(),
+                    );
+                    ui.selectable_value(
+                        &mut tab.line_ending,
+                        LineEnding::CRLF,
+                        LineEnding::CRLF.to_string(),
+                    );
+                });
         }
     });
     ui.add_space(6.0);
@@ -1253,12 +1296,14 @@ fn render_send_panel(ui: &mut egui::Ui, manager: &SessionManager, tab: &mut Sess
             if let Some(handle) = manager.get(tab.id) {
                 match tab.send_mode {
                     SendMode::Text => {
-                        let text = if tab.append_newline {
-                            tab.send_input.trim_end_matches('\n').to_string()
-                        } else {
-                            tab.send_input.clone()
-                        };
+                        let mut text = tab.send_input.trim_end_matches('\n').to_string();
                         if !text.is_empty() {
+                            match tab.line_ending {
+                                LineEnding::None => {}
+                                LineEnding::LF => text.push('\n'),
+                                LineEnding::CR => text.push('\r'),
+                                LineEnding::CRLF => text.push_str("\r\n"),
+                            }
                             tab.console.push_outbound(text);
                         }
                     }
@@ -1299,9 +1344,12 @@ fn build_payload(tab: &SessionTab) -> Result<Option<Vec<u8>>, String> {
 
     match tab.send_mode {
         SendMode::Text => {
-            let mut text = tab.send_input.clone();
-            if tab.append_newline && !text.ends_with('\n') {
-                text.push('\n');
+            let mut text = tab.send_input.trim_end_matches('\n').to_string();
+            match tab.line_ending {
+                LineEnding::None => {}
+                LineEnding::LF => text.push('\n'),
+                LineEnding::CR => text.push('\r'),
+                LineEnding::CRLF => text.push_str("\r\n"),
             }
             Ok(Some(text.into_bytes()))
         }
