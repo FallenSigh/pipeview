@@ -9,10 +9,29 @@ use xserial_client::config::SessionConfig;
 
 const GUI_STATE_FILE_NAME: &str = "gui-state.json";
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionLogConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub file_path: String,
+}
+
+impl Default for SessionLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            file_path: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersistedGuiState {
     #[serde(default)]
     pub sessions: Vec<SessionConfig>,
+    #[serde(default)]
+    pub sessions_log: Vec<SessionLogConfig>,
     #[serde(default)]
     pub active: usize,
     #[serde(default = "default_true")]
@@ -42,6 +61,14 @@ pub fn save_gui_state(state: &PersistedGuiState) {
 
 fn gui_state_path() -> PathBuf {
     gui_state_path_for_os_and_env(env::consts::OS, |key| env::var(key).ok())
+}
+
+/// Returns the xserial configuration directory (the parent of gui-state.json).
+pub fn config_dir() -> PathBuf {
+    gui_state_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn gui_state_path_for_os_and_env(os: &str, get_env: impl Fn(&str) -> Option<String>) -> PathBuf {
@@ -137,6 +164,7 @@ mod tests {
                 },
                 ..SessionConfig::default()
             }],
+            sessions_log: vec![SessionLogConfig::default()],
             active: 0,
             show_timestamp: false,
             show_direction: true,

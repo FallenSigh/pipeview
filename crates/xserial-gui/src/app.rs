@@ -1,8 +1,10 @@
-use crate::app_state::{self, PersistedGuiState};
+use crate::app_state::{self, PersistedGuiState, SessionLogConfig};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::buffers::{HexBuffer, PlotBuffer, TextBuffer};
+use crate::logging::{self, LogWriter};
 use crate::panels::{config, console, hex_view, plot_view, sidebar};
 use crate::perf::{DrainStats, GuiProfiler, GuiSnapshot};
 use crate::shortcuts::{self, default_bindings};
@@ -156,6 +158,9 @@ pub struct SessionTab {
     pub line_ending: LineEnding,
     pub send_status: Option<String>,
     pub search: SearchState,
+    pub log_enabled: bool,
+    pub log_path: String,
+    pub log_writer: Option<LogWriter>,
 }
 
 pub struct XserialApp {
@@ -375,8 +380,17 @@ impl XserialApp {
     }
 
     fn restore_saved_sessions(&mut self, saved_state: PersistedGuiState) {
-        for session_config in saved_state.sessions {
+        for (i, session_config) in saved_state.sessions.into_iter().enumerate() {
             self.add_session_tab(session_config);
+            if let Some(tab) = self.tabs.last_mut() {
+                if let Some(log_cfg) = saved_state.sessions_log.get(i) {
+                    tab.log_enabled = log_cfg.enabled;
+                    tab.log_path = log_cfg.file_path.clone();
+                    if log_cfg.enabled && !log_cfg.file_path.is_empty() {
+                        tab.log_writer = LogWriter::open(&log_cfg.file_path).ok();
+                    }
+                }
+            }
         }
         if !self.tabs.is_empty() {
             self.active = saved_state.active.min(self.tabs.len() - 1);
@@ -408,6 +422,9 @@ impl XserialApp {
             line_ending: LineEnding::None,
             send_status: None,
             search: SearchState::default(),
+            log_enabled: false,
+            log_path: String::new(),
+            log_writer: None,
         });
     }
 
@@ -417,6 +434,14 @@ impl XserialApp {
                 .tabs
                 .iter()
                 .map(|tab| tab.session_config.clone())
+                .collect(),
+            sessions_log: self
+                .tabs
+                .iter()
+                .map(|tab| SessionLogConfig {
+                    enabled: tab.log_enabled,
+                    file_path: tab.log_path.clone(),
+                })
                 .collect(),
             active: if self.tabs.is_empty() {
                 0
@@ -496,6 +521,17 @@ impl XserialApp {
                 SessionEvent::Data(id, entry) => {
                     stats.drained_data_events += 1;
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                        if let Some(ref writer) = tab.log_writer {
+                            if let Some(line) = logging::format_data_log(
+                                &entry,
+                                "IN",
+                                self.display.show_timestamp,
+                                self.display.show_direction,
+                                self.display.show_pipeline,
+                            ) {
+                                writer.write_line(&line);
+                            }
+                        }
                         match &entry.data {
                             DecodedData::Text(_) => {
                                 stats.drained_text_events += 1;
@@ -1259,6 +1295,31 @@ fn render_send_panel(ui: &mut egui::Ui, manager: &SessionManager, tab: &mut Sess
     });
     ui.add_space(6.0);
 
+    let log_toggled = ui
+        .checkbox(&mut tab.log_enabled, "Log to file")
+        .changed();
+    if log_toggled {
+        if tab.log_enabled {
+            tab.log_path = default_log_path(tab.id)
+                .to_string_lossy()
+                .to_string();
+            tab.log_writer = LogWriter::open(&tab.log_path).ok();
+        } else {
+            tab.log_writer = None;
+        }
+    }
+    if tab.log_enabled {
+        ui.horizontal(|ui| {
+            let changed = ui
+                .text_edit_singleline(&mut tab.log_path)
+                .lost_focus();
+            if changed && !tab.log_path.is_empty() {
+                tab.log_writer = LogWriter::open(&tab.log_path).ok();
+            }
+        });
+    }
+    ui.add_space(3.0);
+
     let hint = match tab.send_mode {
         SendMode::Text => "Enter text to send",
         SendMode::Hex => "Enter hex bytes, e.g. 48 65 6C 6C 6F",
@@ -1304,7 +1365,10 @@ fn render_send_panel(ui: &mut egui::Ui, manager: &SessionManager, tab: &mut Sess
                                 LineEnding::CR => text.push('\r'),
                                 LineEnding::CRLF => text.push_str("\r\n"),
                             }
-                            tab.console.push_outbound(text);
+                            tab.console.push_outbound(text.clone());
+                            if let Some(ref writer) = tab.log_writer {
+                                writer.write_line(&logging::format_sent_log(&text));
+                            }
                         }
                     }
                     SendMode::Hex => {
@@ -1314,7 +1378,10 @@ fn render_send_panel(ui: &mut egui::Ui, manager: &SessionManager, tab: &mut Sess
                             .collect::<Vec<_>>()
                             .join(" ");
                         if !hex.is_empty() {
-                            tab.hex.push_outbound(hex);
+                            tab.hex.push_outbound(hex.clone());
+                            if let Some(ref writer) = tab.log_writer {
+                                writer.write_line(&logging::format_sent_log(&hex));
+                            }
                         }
                     }
                 }
@@ -1334,6 +1401,16 @@ fn render_send_panel(ui: &mut egui::Ui, manager: &SessionManager, tab: &mut Sess
             tab.send_status = Some(format!("Send failed: {message}"));
         }
     }
+}
+
+fn default_log_path(session_id: u64) -> PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dir = app_state::config_dir().join("logs");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    dir.join(format!("session_{session_id}_{ts}.log"))
 }
 
 fn build_payload(tab: &SessionTab) -> Result<Option<Vec<u8>>, String> {

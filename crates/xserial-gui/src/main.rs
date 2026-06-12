@@ -1,6 +1,7 @@
 mod app;
 mod app_state;
 mod buffers;
+mod logging;
 mod panels;
 mod perf;
 mod shortcuts;
