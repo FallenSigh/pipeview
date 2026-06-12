@@ -208,7 +208,7 @@ int main(int argc, char **argv) {
 
     double interval = 1.0 / args.rate;
 
-    printf("═══ xserial Plain Text Generator ═══\n");
+    printf("═══ pipeview Plain Text Generator ═══\n");
     printf("串口:   %s @ %d baud\n", args.port, args.baudrate);
     printf("通道:   %u  振幅: %.1f  频率: %.1f Hz\n", args.channels, args.amp, args.freq);
     printf("速率:   %.0f lines/sec  (间隔 %.3f ms)\n", args.rate, interval * 1000.0);

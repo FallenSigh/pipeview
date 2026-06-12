@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TCP server that sends plot waveform frames or text lines for xserial GUI."""
+"""TCP server that sends plot waveform frames or text lines for pipeview GUI."""
 
 import argparse
 import math
@@ -116,7 +116,7 @@ def is_disconnect_error(err: OSError) -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="xserial plot test server")
+    parser = argparse.ArgumentParser(description="pipeview plot test server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--channels", type=int, default=1)

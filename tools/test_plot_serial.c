@@ -429,7 +429,7 @@ int main(int argc, char **argv) {
     double frame_interval = (double)args.samples_per_channel / args.rate;
     double frame_rate = args.rate / (double)args.samples_per_channel;
 
-    printf("═══ xserial Serial Plot Generator ═══\n");
+    printf("═══ pipeview Serial Plot Generator ═══\n");
     printf("串口:    %s @ %d baud\n", args.port, args.baudrate);
     printf("通道:    %u  格式: %s\n", args.channels, format_name);
     printf("频率:    %.1f Hz  振幅: %.1f\n", args.freq, args.amp);

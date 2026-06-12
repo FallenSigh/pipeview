@@ -3263,6 +3263,74 @@ dependencies = [
 ]
 
 [[package]]
+name = "pipeview-client"
+version = "0.1.0"
+dependencies = [
+ "mlua",
+ "pipeview-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "pipeview-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "hex",
+ "nom 8.0.0",
+ "serde",
+ "serde_json",
+ "serialport",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-serial",
+ "tracing",
+]
+
+[[package]]
+name = "pipeview-gui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_plot",
+ "hex",
+ "pipeview-client",
+ "pipeview-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "pipeview-tui"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "crossterm 0.28.1",
+ "hex",
+ "image",
+ "mlua",
+ "pipeview-client",
+ "pipeview-core",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5749,74 +5817,6 @@ name = "xml-rs"
 version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
-
-[[package]]
-name = "xserial-client"
-version = "0.1.0"
-dependencies = [
- "mlua",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "xserial-core",
-]
-
-[[package]]
-name = "xserial-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "hex",
- "nom 8.0.0",
- "serde",
- "serde_json",
- "serialport",
- "thiserror 2.0.18",
- "tokio",
- "tokio-serial",
- "tracing",
-]
-
-[[package]]
-name = "xserial-gui"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui",
- "egui_plot",
- "hex",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "xserial-client",
- "xserial-core",
-]
-
-[[package]]
-name = "xserial-tui"
-version = "0.1.0"
-dependencies = [
- "clap",
- "crossterm 0.28.1",
- "hex",
- "image",
- "mlua",
- "ratatui",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "xserial-client",
- "xserial-core",
-]
 
 [[package]]
 name = "yoke"

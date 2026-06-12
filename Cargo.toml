@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/xserial-core",
-    "crates/xserial-client",
-    "crates/xserial-tui",
-    "crates/xserial-gui",
+    "crates/pipeview-core",
+    "crates/pipeview-client",
+    "crates/pipeview-tui",
+    "crates/pipeview-gui",
 ]
 
 [workspace.dependencies]
