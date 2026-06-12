@@ -13,7 +13,7 @@ pub fn render(
 ) -> usize {
     let line_count = buf.len();
     let row_height = ui.text_style_height(&TextStyle::Monospace);
-    ScrollArea::vertical().stick_to_bottom(true).show_rows(
+    ScrollArea::both().stick_to_bottom(true).show_rows(
         ui,
         row_height,
         line_count,
@@ -74,6 +74,7 @@ fn monospace_format(style: &egui::Style) -> TextFormat {
             .get(&TextStyle::Monospace)
             .cloned()
             .unwrap_or_default(),
+            color: Color32::WHITE,
         ..Default::default()
     }
 }
