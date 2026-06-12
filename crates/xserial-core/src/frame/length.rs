@@ -324,7 +324,7 @@ mod tests {
         let mut f = LengthPrefixedFramer::new(cfg);
         // Corrupt frame: claims 200 bytes, actual payload is 0xFF bytes
         let mut data = be2(200);
-        data.extend_from_slice(&vec![0xFFu8; 200]);
+        data.extend_from_slice(&[0xFFu8; 200]);
         // Followed by valid frame
         data.extend(&be2(3));
         data.extend_from_slice(b"foo");

@@ -72,16 +72,13 @@ async fn session_multiple_reads() {
     let mut texts = Vec::new();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match rx.recv().await.unwrap() {
-                SessionEvent::Data(_, entry) => {
-                    if let DecodedData::Text(s) = entry.data {
-                        texts.push(s);
-                        if texts.len() == 3 {
-                            break;
-                        }
-                    }
+            if let SessionEvent::Data(_, entry) = rx.recv().await.unwrap()
+                && let DecodedData::Text(s) = entry.data
+            {
+                texts.push(s);
+                if texts.len() == 3 {
+                    break;
                 }
-                _ => {}
             }
         }
     })
@@ -127,14 +124,11 @@ async fn session_multi_pipeline_text_and_hex() {
     let mut results = Vec::new();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match rx.recv().await.unwrap() {
-                SessionEvent::Data(_, entry) => {
-                    results.push((entry.pipeline_name.clone(), entry.data.clone()));
-                    if results.len() == 2 {
-                        break;
-                    }
+            if let SessionEvent::Data(_, entry) = rx.recv().await.unwrap() {
+                results.push((entry.pipeline_name.clone(), entry.data.clone()));
+                if results.len() == 2 {
+                    break;
                 }
-                _ => {}
             }
         }
     })

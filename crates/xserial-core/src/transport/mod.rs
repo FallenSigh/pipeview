@@ -294,11 +294,11 @@ mod tests {
         assert_eq!(original, cloned);
 
         let original = TransportType::Tcp;
-        let cloned = original.clone();
+        let cloned = original;
         assert_eq!(original, cloned);
 
         let original = TransportType::Udp;
-        let cloned = original.clone();
+        let cloned = original;
         assert_eq!(original, cloned);
     }
 

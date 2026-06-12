@@ -225,7 +225,7 @@ async fn tcp_fixed_plot_f32() {
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         // 3 samples × 4 bytes each = 12 bytes per frame
-        let samples: [f32; 3] = [1.0, -2.5, 3.14];
+        let samples: [f32; 3] = [1.0, -2.5, 0.0];
         let mut data = Vec::new();
         for s in &samples {
             data.extend_from_slice(&s.to_le_bytes());
@@ -255,7 +255,7 @@ async fn tcp_fixed_plot_f32() {
             assert_eq!(frame.channels[0].len(), 3);
             assert!((frame.channels[0][0] - 1.0).abs() < 1e-5);
             assert!((frame.channels[0][1] - (-2.5)).abs() < 1e-5);
-            assert!((frame.channels[0][2] - 3.14).abs() < 1e-5);
+            assert!((frame.channels[0][2] - 0.0).abs() < 1e-5);
         }
         other => panic!("expected Plot, got {:?}", other),
     }

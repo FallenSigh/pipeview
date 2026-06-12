@@ -83,7 +83,7 @@ impl TextBuffer {
         };
         (0..self.lines.len())
             .filter(|&i| {
-                self.lines.get(i).map_or(false, |line| {
+                self.lines.get(i).is_some_and(|line| {
                     if case_sensitive {
                         line.text.contains(query)
                     } else {
@@ -197,7 +197,7 @@ impl HexBuffer {
         };
         (0..self.lines.len())
             .filter(|&i| {
-                self.lines.get(i).map_or(false, |line| {
+                self.lines.get(i).is_some_and(|line| {
                     if case_sensitive {
                         line.hex.contains(query) || line.ascii.contains(query)
                     } else {

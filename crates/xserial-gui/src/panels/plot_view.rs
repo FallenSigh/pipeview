@@ -9,6 +9,7 @@ pub enum PlotDisplayMode {
     Detached,
 }
 
+#[derive(Default)]
 pub struct PlotViewState {
     pub lock_x: bool,
     pub lock_y: bool,
@@ -16,19 +17,6 @@ pub struct PlotViewState {
     pub follow_latest: bool,
     pub last_bounds: Option<PlotBounds>,
     pub detached: bool,
-}
-
-impl Default for PlotViewState {
-    fn default() -> Self {
-        Self {
-            lock_x: false,
-            lock_y: false,
-            box_zoom: false,
-            follow_latest: false,
-            last_bounds: None,
-            detached: false,
-        }
-    }
 }
 
 pub struct PlotRenderOutput {

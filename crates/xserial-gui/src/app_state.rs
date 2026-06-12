@@ -9,21 +9,12 @@ use xserial_client::config::SessionConfig;
 
 const GUI_STATE_FILE_NAME: &str = "gui-state.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionLogConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub file_path: String,
-}
-
-impl Default for SessionLogConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            file_path: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

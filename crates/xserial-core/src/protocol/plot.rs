@@ -469,7 +469,8 @@ mod tests {
         };
         let d = PlotDecoder::new(cfg);
         // 7 bytes: 1 full u32 (4 bytes) + 3 trailing bytes
-        let data = vec![1u32.to_le_bytes().to_vec(), vec![0xff; 3]].concat();
+        let mut data = 1u32.to_le_bytes().to_vec();
+        data.extend_from_slice(&[0xff; 3]);
         let result = d.decode(&data).unwrap();
         match result {
             DecodedData::Plot(frame) => {

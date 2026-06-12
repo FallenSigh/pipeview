@@ -10,17 +10,12 @@ use tracing::{info, warn};
 
 const FONT_SETTINGS_FILE_NAME: &str = "gui-fonts.json";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FontChoice {
     Auto,
+    #[default]
     Default,
     System(String),
-}
-
-impl Default for FontChoice {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 #[derive(Clone, Debug)]

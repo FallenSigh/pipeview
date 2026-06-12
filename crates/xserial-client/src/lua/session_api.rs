@@ -224,10 +224,10 @@ impl CallbackState {
 
 impl Drop for CallbackState {
     fn drop(&mut self) {
-        if let Ok(mut relay_task) = self.relay_task.lock() {
-            if let Some(task) = relay_task.take() {
-                task.abort();
-            }
+        if let Ok(mut relay_task) = self.relay_task.lock()
+            && let Some(task) = relay_task.take()
+        {
+            task.abort();
         }
     }
 }

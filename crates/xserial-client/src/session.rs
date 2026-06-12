@@ -192,10 +192,10 @@ impl Drop for SessionHandle {
     fn drop(&mut self) {
         if Arc::strong_count(&self.inner) == 1 {
             self.inner.request_close_nonblocking();
-            if let Ok(mut task) = self.inner.task.try_lock() {
-                if let Some(task) = task.take() {
-                    task.abort();
-                }
+            if let Ok(mut task) = self.inner.task.try_lock()
+                && let Some(task) = task.take()
+            {
+                task.abort();
             }
         }
     }
@@ -304,10 +304,10 @@ impl Session {
             }
             Some(SessionCmd::Connect) => {
                 self.desired_connected = true;
-                if self.conn.is_none() {
-                    if let Err(err) = self.connect().await {
-                        self.emit_error(format!("connect failed: {err}"));
-                    }
+                if self.conn.is_none()
+                    && let Err(err) = self.connect().await
+                {
+                    self.emit_error(format!("connect failed: {err}"));
                 }
                 true
             }
@@ -500,7 +500,7 @@ async fn try_read(
 }
 
 fn to_io_error(err: xserial_core::error::Error) -> std::io::Error {
-    io::Error::new(io::ErrorKind::Other, err.to_string())
+    io::Error::other(err.to_string())
 }
 
 #[cfg(test)]

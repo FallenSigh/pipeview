@@ -72,10 +72,10 @@ impl MixedTextPlotFramer {
             return;
         }
 
-        if let Some(decoded) = cobs_decode(&self.plot_buf) {
-            if decoded.len() <= self.config.max_plot_frame {
-                frames.push(tag_plot_frame(decoded));
-            }
+        if let Some(decoded) = cobs_decode(&self.plot_buf)
+            && decoded.len() <= self.config.max_plot_frame
+        {
+            frames.push(tag_plot_frame(decoded));
         }
         self.plot_buf.clear();
         self.plot_overflow = false;

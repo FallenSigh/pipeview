@@ -716,6 +716,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn submit_session_form(&mut self, form: SessionForm) -> Result<(), (SessionForm, String)> {
         let config = match build_session_config(&form) {
             Ok(config) => config,
@@ -741,17 +742,13 @@ impl App {
     fn on_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         match code {
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('j') => {
-                if self.active + 1 < self.tabs.len() {
-                    self.active += 1;
-                    self.persist_state();
-                }
+            KeyCode::Char('j') if self.active + 1 < self.tabs.len() => {
+                self.active += 1;
+                self.persist_state();
             }
-            KeyCode::Char('k') => {
-                if self.active > 0 {
-                    self.active -= 1;
-                    self.persist_state();
-                }
+            KeyCode::Char('k') if self.active > 0 => {
+                self.active -= 1;
+                self.persist_state();
             }
             KeyCode::Char('n') => self.open_create_form(),
             KeyCode::Char('e') => self.open_edit_form(),
@@ -854,11 +851,11 @@ impl App {
             }
             KeyCode::Enter => {
                 let mode = std::mem::replace(&mut self.mode, AppMode::Normal);
-                if let AppMode::SessionForm(form) = mode {
-                    if let Err((form, err)) = self.submit_session_form(form) {
-                        self.mode = AppMode::SessionForm(form);
-                        self.set_notice(err);
-                    }
+                if let AppMode::SessionForm(form) = mode
+                    && let Err((form, err)) = self.submit_session_form(form)
+                {
+                    self.mode = AppMode::SessionForm(form);
+                    self.set_notice(err);
                 }
             }
             _ => {}
@@ -879,12 +876,11 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
         app.drain_events();
         terminal.draw(|frame| crate::ui::render(frame, &app))?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    app.on_key(key.code, key.modifiers);
-                }
-            }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            app.on_key(key.code, key.modifiers);
         }
 
         if app.should_quit() {

@@ -878,7 +878,7 @@ fn validate_pipeline(ui: &mut Ui, pipeline: &PipelineForm, errors: &mut Vec<Stri
             };
             let sample_bytes = pipeline.plot_sample_type.byte_size();
             let frame_unit = channel_count.saturating_mul(sample_bytes);
-            if frame_unit == 0 || pipeline.fixed_frame_len % frame_unit != 0 {
+            if frame_unit == 0 || !pipeline.fixed_frame_len.is_multiple_of(frame_unit) {
                 push_error(format!(
                     "Fixed frame length must be a multiple of {} bytes for the current plot layout",
                     frame_unit

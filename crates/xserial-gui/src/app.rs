@@ -51,6 +51,7 @@ pub enum SendMode {
 }
 
 #[derive(Clone, Copy, PartialEq)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum LineEnding {
     None,
     LF,
@@ -76,7 +77,7 @@ pub struct DisplayOptions {
     pub show_pipeline: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SearchState {
     pub query: String,
     pub matches: Vec<usize>,
@@ -84,19 +85,6 @@ pub struct SearchState {
     pub case_sensitive: bool,
     pub active: bool,
     pub just_opened: bool,
-}
-
-impl Default for SearchState {
-    fn default() -> Self {
-        Self {
-            query: String::new(),
-            matches: Vec::new(),
-            current_match: 0,
-            case_sensitive: false,
-            active: false,
-            just_opened: false,
-        }
-    }
 }
 
 impl SearchState {
@@ -357,17 +345,17 @@ impl XserialApp {
                 }
             }
             SearchNext => {
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    if tab.search.active {
-                        tab.search.next();
-                    }
+                if let Some(tab) = self.tabs.get_mut(self.active)
+                    && tab.search.active
+                {
+                    tab.search.next();
                 }
             }
             SearchPrev => {
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    if tab.search.active {
-                        tab.search.prev();
-                    }
+                if let Some(tab) = self.tabs.get_mut(self.active)
+                    && tab.search.active
+                {
+                    tab.search.prev();
                 }
             }
         }
@@ -382,13 +370,13 @@ impl XserialApp {
     fn restore_saved_sessions(&mut self, saved_state: PersistedGuiState) {
         for (i, session_config) in saved_state.sessions.into_iter().enumerate() {
             self.add_session_tab(session_config);
-            if let Some(tab) = self.tabs.last_mut() {
-                if let Some(log_cfg) = saved_state.sessions_log.get(i) {
-                    tab.log_enabled = log_cfg.enabled;
-                    tab.log_path = log_cfg.file_path.clone();
-                    if log_cfg.enabled && !log_cfg.file_path.is_empty() {
-                        tab.log_writer = LogWriter::open(&log_cfg.file_path).ok();
-                    }
+            if let Some(tab) = self.tabs.last_mut()
+                && let Some(log_cfg) = saved_state.sessions_log.get(i)
+            {
+                tab.log_enabled = log_cfg.enabled;
+                tab.log_path = log_cfg.file_path.clone();
+                if log_cfg.enabled && !log_cfg.file_path.is_empty() {
+                    tab.log_writer = LogWriter::open(&log_cfg.file_path).ok();
                 }
             }
         }
@@ -521,16 +509,16 @@ impl XserialApp {
                 SessionEvent::Data(id, entry) => {
                     stats.drained_data_events += 1;
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                        if let Some(ref writer) = tab.log_writer {
-                            if let Some(line) = logging::format_data_log(
+                        if let Some(ref writer) = tab.log_writer
+                            && let Some(line) = logging::format_data_log(
                                 &entry,
                                 "IN",
                                 self.display.show_timestamp,
                                 self.display.show_direction,
                                 self.display.show_pipeline,
-                            ) {
-                                writer.write_line(&line);
-                            }
+                            )
+                        {
+                            writer.write_line(&line);
                         }
                         match &entry.data {
                             DecodedData::Text(_) => {
@@ -1006,6 +994,7 @@ fn transport_summary(transport: &TransportConfig) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_font_selector(
     ui: &mut egui::Ui,
     title: &str,

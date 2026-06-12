@@ -91,10 +91,7 @@ fn render_main(frame: &mut Frame, app: &App, area: Rect) {
             sections[3],
         );
 
-        if matches!(tab.status, ConnectionStatus::Error(_)) {
-            if let ConnectionStatus::Error(message) = &tab.status {
-                let _ = message;
-            }
+        if let ConnectionStatus::Error(_) = &tab.status {
         }
     } else {
         frame.render_widget(
